@@ -11,7 +11,28 @@ import argparse
 import itertools
 import os
 from collections import Counter
-from typing import Optional
+from typing import Optional, Callable
+
+
+# ── Monoid presets ──────────────────────────────────────────────────────────
+# Each returns (op, identity, monoid_size) where op: (int, int) -> int
+# operates on monoid element indices 0..monoid_size-1.
+
+def parity_monoid():
+    """Z_2 under XOR. Elements: {0, 1}."""
+    return (lambda a, b: a ^ b), 0, 2
+
+def cyclic_monoid(n: int):
+    """Z_n under addition mod n. Elements: {0, 1, ..., n-1}."""
+    return (lambda a, b: (a + b) % n), 0, n
+
+def monoid_from_cayley_table(table: list[list[int]], identity: int):
+    """
+    Arbitrary finite monoid from a Cayley (multiplication) table.
+    table[i][j] = op(i, j). identity is the index of the identity element.
+    """
+    monoid_size = len(table)
+    return (lambda a, b: table[a][b]), identity, monoid_size
 
 class NoPE(nn.Module):
     def __init__(self) -> None:
@@ -424,6 +445,113 @@ class AdditionDataset(IterableDataset):
             yield instance, pos_ids, label
 
 
+class MQARWordProblemDataset(IterableDataset):
+    def __init__(self, tokenizer: customTokenizer, length_range: tuple[int, int],
+                 max_test_length: int, key_size: int, monoid_size: int,
+                 query_fraction: float, op: Callable[[int, int], int], identity: int):
+        """
+        MQAR Word Problem dataset.
+
+        Args:
+            tokenizer: customTokenizer whose vocab is [k0..k_{K-1}, m0..m_{M-1}] + specials.
+            length_range: (min, max) for the content length (2T + Q).
+            max_test_length: max content length for position ID offset (-1 for eval).
+            key_size: |K|, number of distinct keys.
+            monoid_size: |M|, number of monoid elements.
+            query_fraction: fraction of content length devoted to queries.
+            op: binary monoid operation on element indices (0..M-1) -> (0..M-1).
+            identity: index of the monoid identity element.
+        """
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.range_min, self.range_max = length_range
+        self.max_test_length = max_test_length
+        self.key_size = key_size
+        self.monoid_size = monoid_size
+        self.query_fraction = query_fraction
+        self.op = op
+        self.identity = identity
+        # Key token IDs: 0..key_size-1
+        # Monoid token IDs: key_size..key_size+monoid_size-1
+        self.monoid_token_offset = key_size
+
+        # Validate constraints
+        assert 0 < query_fraction < 1, "query_fraction must be in (0, 1)"
+        # Ensure we can always form valid instances at range_min
+        self._validate_length(self.range_min)
+
+    def _derive_T_Q(self, length: int):
+        """Derive T (num update pairs) and Q (num queries) from content length."""
+        Q = max(1, round(self.query_fraction * length))
+        T = (length - Q) // 2
+        # Clamp: need T >= Q (enough keys to query) and T >= 1
+        if T < Q:
+            T = Q
+        T = min(T, self.key_size)  # can't exceed available keys
+        Q = min(Q, T)  # can't query more keys than we have
+        return T, Q
+
+    def _validate_length(self, length: int):
+        T, Q = self._derive_T_Q(length)
+        assert T >= 1, f"Cannot form valid instance: T={T} at length={length}"
+        assert Q >= 1, f"Cannot form valid instance: Q={Q} at length={length}"
+        assert T <= self.key_size, (
+            f"key_size={self.key_size} too small for T={T} at length={length}")
+
+    def compute_n_positions(self):
+        """Compute max sequence length (for n_positions in GPT2Config)."""
+        T, Q = self._derive_T_Q(self.max_test_length)
+        # <bos> k m k m ... <sep> q q ... <sep> answer <eos>
+        return 2 * T + Q + 5  # bos + 2T + sep + Q + sep + answer + eos
+
+    def __iter__(self):
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            T, Q = self._derive_T_Q(length)
+
+            # Sample T unique keys (as token IDs 0..key_size-1)
+            keys = random.sample(range(self.key_size), T)
+            # Sample T monoid elements (as monoid indices 0..monoid_size-1)
+            values = [random.randint(0, self.monoid_size - 1) for _ in range(T)]
+            kv_map = dict(zip(keys, values))
+
+            # Sample Q query keys without replacement from the T keys
+            query_keys = random.sample(keys, Q)
+
+            # Compute answer: left-fold retrieved values with monoid op
+            answer_idx = self.identity
+            for qk in query_keys:
+                answer_idx = self.op(answer_idx, kv_map[qk])
+
+            # Build token sequence:
+            # <bos> k1 m1 k2 m2 ... kT mT <sep> q1 ... qQ <sep> answer <eos>
+            instance = [self.tokenizer.bos_token_id]
+            for k, v in zip(keys, values):
+                instance.append(k)                              # key token ID
+                instance.append(self.monoid_token_offset + v)   # monoid token ID
+            instance.append(self.tokenizer.sep_token_id)
+            for qk in query_keys:
+                instance.append(qk)                             # key token ID
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(self.monoid_token_offset + answer_idx)  # answer token ID
+            instance.append(self.tokenizer.eos_token_id)
+
+            # Label: mask everything before the answer
+            label = deepcopy(instance)
+            mask_len = 2 * T + Q + 3  # bos + 2T pairs + sep + Q queries + sep
+            label[:mask_len] = [self.tokenizer.pad_token_id] * mask_len
+
+            # Position IDs with random offset
+            if self.max_test_length != -1:
+                n_pos = self.compute_n_positions()
+                offset = random.randint(0, max(0, n_pos - len(instance)))
+            else:
+                offset = 0
+            pos_ids = list(range(offset, len(instance) + offset))
+
+            yield instance, pos_ids, label
+
+
 class EvalDataset(Dataset):
     def __init__(self, d: IterableDataset, num_data: int) -> None:
         super().__init__()
@@ -498,9 +626,18 @@ class myCallback(TrainerCallback):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar_word_problem"])
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
+    # MQAR-specific arguments
+    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"],
+                        help="Monoid preset for mqar_word_problem task")
+    parser.add_argument("--monoid_n", type=int, default=2,
+                        help="Order n for cyclic monoid Z_n (only used when --monoid=cyclic)")
+    parser.add_argument("--key_size", type=int, default=32,
+                        help="Number of distinct keys |K| for mqar_word_problem")
+    parser.add_argument("--query_fraction", type=float, default=0.2,
+                        help="Fraction of content length devoted to queries for mqar_word_problem")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -606,7 +743,33 @@ if __name__ == "__main__":
 
         n_positions = max_test_length*2  # bos, ans, eos
 
-    
+    elif args.task == "mqar_word_problem":
+        # Select monoid
+        if args.monoid == "parity":
+            op, identity, monoid_size = parity_monoid()
+        elif args.monoid == "cyclic":
+            op, identity, monoid_size = cyclic_monoid(args.monoid_n)
+
+        vocab = [f"k{i}" for i in range(args.key_size)] + [f"m{i}" for i in range(monoid_size)]
+        tokenizer = customTokenizer(vocab)
+
+        train_dataset = MQARWordProblemDataset(
+            tokenizer, train_length_range, max_test_length,
+            args.key_size, monoid_size, args.query_fraction, op, identity,
+        )
+
+        test_dataset = {
+            f"len{test_range[0]}-{test_range[1]}": EvalDataset(
+                MQARWordProblemDataset(
+                    tokenizer, test_range, -1,
+                    args.key_size, monoid_size, args.query_fraction, op, identity,
+                ), test_num)
+            for test_range in test_length_ranges
+        }
+
+        n_positions = train_dataset.compute_n_positions()
+
+
     task_path = f"./lm-out-new-{args.task}"
     if not os.path.exists(task_path):
         os.mkdir(task_path)
@@ -666,7 +829,7 @@ if __name__ == "__main__":
             per_device_train_batch_size=per_device_bz,
             per_device_eval_batch_size=per_device_bz,
             max_steps=max_steps,
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             eval_steps=3_000,
             save_strategy="no",
             logging_strategy="steps",
