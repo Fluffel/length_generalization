@@ -93,7 +93,7 @@ for seed in range(1000):
         per_device_train_batch_size=per_device_bz,
         per_device_eval_batch_size=per_device_bz,
         max_steps=30_000,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=3_000,
         save_strategy="no",
         logging_strategy="steps",

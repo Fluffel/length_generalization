@@ -242,7 +242,7 @@ if __name__ == "__main__":
                 per_device_train_batch_size=per_device_bz,
                 per_device_eval_batch_size=per_device_bz,
                 max_steps=max_steps,
-                evaluation_strategy="steps",
+                eval_strategy="steps",
                 eval_steps=3_000,
                 save_strategy="no",
                 logging_strategy="steps",
