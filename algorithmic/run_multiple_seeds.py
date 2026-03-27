@@ -238,7 +238,6 @@ if __name__ == "__main__":
 
             training_args = TrainingArguments(
                 output_dir=os.path.join(save_path, "temp"),    
-                overwrite_output_dir=True,
                 per_device_train_batch_size=per_device_bz,
                 per_device_eval_batch_size=per_device_bz,
                 max_steps=max_steps,

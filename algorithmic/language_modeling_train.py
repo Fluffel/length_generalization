@@ -655,119 +655,127 @@ if __name__ == "__main__":
     # configs.append((12, 12, 768, 1e-4))
     # configs = [(12, 12, 768, 1e-4)]
 
-    if args.task == "bin_majority":
-        tokenizer = customTokenizer(["0", "1"])
-        train_dataset = BinaryMajorityDataset(tokenizer, train_length_range, max_test_length)
+    match args.task:
+        case "bin_majority":
+    # if args.task == "bin_majority":
+            tokenizer = customTokenizer(["0", "1"])
+            train_dataset = BinaryMajorityDataset(tokenizer, train_length_range, max_test_length)
 
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(tokenizer, test_range, -1), test_num)
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length + 4      # bos, sep, ans, eos
+        case "majority":
+        # elif args.task == "majority":
+            tokenizer = customTokenizer(list(string.ascii_lowercase))
+            train_dataset = MajorityDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length + 4      # bos, sep, ans, eos
+        case "bin_majority_interleave":
+        # elif args.task == "bin_majority_interleave":
+            tokenizer = customTokenizer(["0", "1"])
+            train_dataset = BinaryMajorityInterleaveDataset(tokenizer, train_length_range, max_test_length, period=3)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(tokenizer, test_range, -1, 3), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length + 6    # ans
+
+        case "unique_copy":
+        # elif args.task == "unique_copy":
+            tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
+            train_dataset = UniqueCopyDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length*2 + 3  # bos, sep, eos
+        
+        case "repeat_copy":
+        # elif args.task == "repeat_copy":
+            tokenizer = customTokenizer(["a", "b"])
+            train_dataset = RepeatCopyDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length*2 + 3  # bos, sep, eos
+
+        case "sort":
+        # elif args.task == "sort":
+            tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
+            train_dataset = SortDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length*2 + 3  # bos, sep, eos
+
+        case "parity":
+        # elif args.task == "parity":
+            tokenizer = customTokenizer(["0", "1", "e", "o"])       # even, odd
+            train_dataset = ParityDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length + 4  # bos, sep, ans, eos
+
+        case "addition":
+        # elif args.task == "addition":
+            tokenizer = customTokenizer(["0", "1", "+", "="])      
+            train_dataset = AdditionDataset(tokenizer, train_length_range, max_test_length)
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(tokenizer, test_range, -1), test_num)
+                    for test_range in test_length_ranges
+            }
+
+            n_positions = max_test_length*2  # bos, ans, eos
+        
+        case "mqar_word_problem":
+            # Select monoid
+            match args.monoid:
+                case "parity":
+                    op, identity, monoid_size = parity_monoid()
+                case "cyclic":
+                    op, identity, monoid_size = cyclic_monoid(args.monoid_n)
+
+            vocab = [f"k{i}" for i in range(args.key_size)] + [f"m{i}" for i in range(monoid_size)]
+            tokenizer = customTokenizer(vocab)
+
+            train_dataset = MQARWordProblemDataset(
+                tokenizer, train_length_range, max_test_length,
+                args.key_size, monoid_size, args.query_fraction, op, identity,
+            )
+
+            test_dataset = {
+                f"len{test_range[0]}-{test_range[1]}": EvalDataset(
+                    MQARWordProblemDataset(
+                        tokenizer, test_range, -1,
+                        args.key_size, monoid_size, args.query_fraction, op, identity,
+                    ), test_num)
                 for test_range in test_length_ranges
-        }
+            }
 
-        n_positions = max_test_length + 4      # bos, sep, ans, eos
-
-    elif args.task == "majority":
-        tokenizer = customTokenizer(list(string.ascii_lowercase))
-        train_dataset = MajorityDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length + 4      # bos, sep, ans, eos
-
-    elif args.task == "bin_majority_interleave":
-        tokenizer = customTokenizer(["0", "1"])
-        train_dataset = BinaryMajorityInterleaveDataset(tokenizer, train_length_range, max_test_length, period=3)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(tokenizer, test_range, -1, 3), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length + 6    # ans
-
-    elif args.task == "unique_copy":
-        tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
-        train_dataset = UniqueCopyDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length*2 + 3  # bos, sep, eos
-    
-    elif args.task == "repeat_copy":
-        tokenizer = customTokenizer(["a", "b"])
-        train_dataset = RepeatCopyDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length*2 + 3  # bos, sep, eos
-
-    elif args.task == "sort":
-        tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
-        train_dataset = SortDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length*2 + 3  # bos, sep, eos
-
-    elif args.task == "parity":
-        tokenizer = customTokenizer(["0", "1", "e", "o"])       # even, odd
-        train_dataset = ParityDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length + 4  # bos, sep, ans, eos
-
-    elif args.task == "addition":
-        tokenizer = customTokenizer(["0", "1", "+", "="])      
-        train_dataset = AdditionDataset(tokenizer, train_length_range, max_test_length)
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
-        }
-
-        n_positions = max_test_length*2  # bos, ans, eos
-
-    elif args.task == "mqar_word_problem":
-        # Select monoid
-        if args.monoid == "parity":
-            op, identity, monoid_size = parity_monoid()
-        elif args.monoid == "cyclic":
-            op, identity, monoid_size = cyclic_monoid(args.monoid_n)
-
-        vocab = [f"k{i}" for i in range(args.key_size)] + [f"m{i}" for i in range(monoid_size)]
-        tokenizer = customTokenizer(vocab)
-
-        train_dataset = MQARWordProblemDataset(
-            tokenizer, train_length_range, max_test_length,
-            args.key_size, monoid_size, args.query_fraction, op, identity,
-        )
-
-        test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(
-                MQARWordProblemDataset(
-                    tokenizer, test_range, -1,
-                    args.key_size, monoid_size, args.query_fraction, op, identity,
-                ), test_num)
-            for test_range in test_length_ranges
-        }
-
-        n_positions = train_dataset.compute_n_positions()
+            n_positions = train_dataset.compute_n_positions()
 
 
     task_path = f"./lm-out-new-{args.task}"
@@ -779,7 +787,7 @@ if __name__ == "__main__":
         suffix = f"-reg{args.regularize}"
     else:
         suffix = ""
-    summary_f = open(os.path.join(task_path, f"summary{suffix}.txt"), "w")
+    summary_f = open(os.path.join(task_path, f"summary{suffix}.txt"), "a")
 
     for i in range(3):
         print("\ninput example:")
@@ -825,7 +833,6 @@ if __name__ == "__main__":
 
         training_args = TrainingArguments(
             output_dir=output_dir,    
-            overwrite_output_dir=True,
             per_device_train_batch_size=per_device_bz,
             per_device_eval_batch_size=per_device_bz,
             max_steps=max_steps,
