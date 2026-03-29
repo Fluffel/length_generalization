@@ -67,7 +67,7 @@ class customCollator():
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar_word_problem"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
     # MQAR-specific arguments
@@ -161,7 +161,7 @@ if __name__ == "__main__":
                     for test_range in test_length_ranges
             }
 
-        case "mqar_word_problem":
+        case "mqar":
             train_dataset = MQARWordProblemDataset(
                 train_length_range, max_test_length,
                 args.key_size, args.query_fraction, args.monoid, args.monoid_n
