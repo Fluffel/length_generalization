@@ -65,7 +65,7 @@ class SSMCallback(TrainerCallback):
                     msg = "reach max step\t\t"
                 if self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] >= 0.99:
                     msg = ">> " + msg
-                print(f"{n_layer}l{d_model}d{dropout}dr\t\t", msg, "\t\t".join([f"{k}: {v}" for k, v in self.latest_acc.items()]), f"\t\tlr: {lr}", file=summary_f)
+                print(f"ssm{n_layer}l{d_model}d{dropout}dr\t\t", msg, "\t\t".join([f"{k}: {v}" for k, v in self.latest_acc.items()]), f"\t\tlr: {lr}", file=summary_f)
                 summary_f.flush()
 
                 if (self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] == 1.0) and (self.latest_acc[f"eval_len{test_length_ranges[1][0]}-{test_length_ranges[1][1]}_acc"] == 1.0):
@@ -96,6 +96,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
+    parser.add_argument("--seeds", type=int, default=1)
     # parser.add_argument("--model", type=str, choices=["gpt", "gpt_nope", "gpt_reg", "s4"])
     # parser.add_argument("--nope", action="store_true")
     # parser.add_argument("--regularize", type=float, default=0.0)
@@ -110,9 +111,10 @@ if __name__ == "__main__":
                         help="Fraction of content length devoted to queries for mqar_word_problem")
     args = parser.parse_args()
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    torch.manual_seed(0)
-    random.seed(0)
+    # configs = [(l, d, dr, lr) for l in [1, 2, 4] for d in [16, 64, 256] for dr in [0] for lr in [1e-3, 1e-4]]
+    configs = [(l, d, dr, lr) for l in [1, 4, 8] for d in [16, 64, 256] for dr in [0, 0.1] for lr in [1e-3, 1e-4]]
+    # configs.append((12, 12, 768, 1e-4))
+    # configs = [(12, 12, 768, 1e-4)]
 
     train_length_range = (0, 50)
     test_length_ranges = [train_length_range] + [(51, 100), (101, 150)]
@@ -120,196 +122,200 @@ if __name__ == "__main__":
     batch_size = 64
     per_device_bz = batch_size // torch.cuda.device_count() if torch.cuda.is_available() else batch_size 
     test_num = 2_000
+    
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    # configs = [(l, d, dr, lr) for l in [1, 2, 4] for d in [16, 64, 256] for dr in [0] for lr in [1e-3, 1e-4]]
-    configs = [(l, d, dr, lr) for l in [4] for d in [256] for dr in [0] for lr in [1e-3, 1e-4]]
-    # configs.append((12, 12, 768, 1e-4))
-    # configs = [(12, 12, 768, 1e-4)]
+    for seed in range(args.seeds):
+        torch.manual_seed(seed)
+        random.seed(seed)
 
-    match args.task:
-        case "bin_majority":
-            train_dataset = BinaryMajorityDataset(train_length_range, max_test_length)
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+
+        match args.task:
+            case "bin_majority":
+                train_dataset = BinaryMajorityDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "majority":
+                train_dataset = MajorityDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "bin_majority_interleave":
+                train_dataset = BinaryMajorityInterleaveDataset(train_length_range, max_test_length, period=3)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(test_range, max_test_length, period=3, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "unique_copy":
+                train_dataset = UniqueCopyDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+            
+            case "repeat_copy":
+                train_dataset = RepeatCopyDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "sort":
+                train_dataset = SortDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "parity":
+                train_dataset = ParityDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "addition":
+                train_dataset = AdditionDataset(train_length_range, max_test_length)
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(test_range, max_test_length, add_positional_offset=False), test_num)
+                        for test_range in test_length_ranges
+                }
+
+            case "mqar":
+                train_dataset = MQARWordProblemDataset(
+                    
+                    train_length_range, max_test_length,
+                    key_size=args.key_size, query_fraction=args.query_fraction, monoid_type=args.monoid, monoid_n=args.monoid_n
+                )
+
+                test_dataset = {
+                    f"len{test_range[0]}-{test_range[1]}": EvalDataset(
+                        MQARWordProblemDataset(
+                            test_range, max_test_length, add_positional_offset=False,
+                            key_size=args.key_size, query_fraction=args.query_fraction, monoid_type=args.monoid, monoid_n=args.monoid_n
+                        ), test_num)
                     for test_range in test_length_ranges
-            }
+                }
 
-        case "majority":
-            train_dataset = MajorityDataset(train_length_range, max_test_length)
+        n_positions = train_dataset.n_positions
+        tokenizer = train_dataset.tokenizer
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
+        # task_path = f"./lm-out-new-{args.model}-{args.task}"
+        task_path = f"./logs/{args.task}"
+        if not os.path.exists(task_path):
+            os.mkdir(task_path)
+        # if args.nope:
+        #     suffix = "-nope"
+        # elif args.regularize != 0:
+        #     suffix = f"-reg{args.regularize}"
+        # else:
+        #     suffix = ""
+        suffix = "ssm"
+        summary_f = open(os.path.join(task_path, f"summary{suffix}.txt"), "a")
 
-        case "bin_majority_interleave":
-            train_dataset = BinaryMajorityInterleaveDataset(train_length_range, max_test_length, period=3)
+        for i in range(3):
+            print("\ninput example:")
+            print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][0])))
+            print("label example:")
+            print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][2])))
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(test_range, max_test_length, period=3, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
+        should_stop = False
+        fit_train_data = False
+        for n_layer, d_model, dropout, lr in configs: 
 
-        case "unique_copy":
-            train_dataset = UniqueCopyDataset(train_length_range, max_test_length)
+            if n_layer > 4:
+                max_steps = 60_000
+                warmup_steps = 3000
+                if fit_train_data:
+                    break
+            else:
+                max_steps = 30_000
+                warmup_steps = 0
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
-        
-        case "repeat_copy":
-            train_dataset = RepeatCopyDataset(train_length_range, max_test_length)
+            output_dir = f"ssm{n_layer}l{d_model}d{dropout}dr{'smalllr' if lr == 1e-4 else ''}"
+            output_dir = os.path.join(task_path, output_dir)
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
-
-        case "sort":
-            train_dataset = SortDataset(train_length_range, max_test_length)
-
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
-
-        case "parity":
-            train_dataset = ParityDataset(train_length_range, max_test_length)
-
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
-
-        case "addition":
-            train_dataset = AdditionDataset(train_length_range, max_test_length)
-
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(test_range, max_test_length, add_positional_offset=False), test_num)
-                    for test_range in test_length_ranges
-            }
-
-        case "mqar":
-            train_dataset = MQARWordProblemDataset(
-                
-                train_length_range, max_test_length,
-                key_size=args.key_size, query_fraction=args.query_fraction, monoid_type=args.monoid, monoid_n=args.monoid_n
+            # if args.model in ["gpt", "gpt_nope", "gpt_reg"]:
+            #     cfg = GPT2Config(vocab_size=len(tokenizer), 
+            #             n_positions=n_positions,
+            #             n_embd=d_model,
+            #             n_layer=n_layer,
+            #             n_head=n_head,
+            #             bos_token_id=tokenizer.bos_token_id, 
+            #             eos_token_id=tokenizer.eos_token_id,
+            #             pad_token_id=tokenizer.pad_token_id,
+            #             attn_pdrop=0,
+            #             resid_pdrop=0,
+            #             embd_pdrop=0,
+            #             )
+            # else: # s4 only s4 model currently
+            cfg = S4Config(vocab_size=len(tokenizer),
+                            n_embd=d_model,
+                            n_layers=n_layer,
+                            dropout=dropout
             )
 
-            test_dataset = {
-                f"len{test_range[0]}-{test_range[1]}": EvalDataset(
-                    MQARWordProblemDataset(
-                        test_range, max_test_length, add_positional_offset=False,
-                        key_size=args.key_size, query_fraction=args.query_fraction, monoid_type=args.monoid, monoid_n=args.monoid_n
-                    ), test_num)
-                for test_range in test_length_ranges
-            }
+                    
+            # match args.model:
+            #     case "gpt":
+            #         model = GPT2LMHeadModel(cfg)
+            #     case "gpt_nope":
+            #         model = NoPEGPT2LMHeadModel(cfg)
+            #     case "gpt_reg":
+            #         model = RegGPT2LMHeadModel(cfg, args.regularize)
+            #     case "s4":
+            model = S4ForSequenceModeling(cfg)
 
-    n_positions = train_dataset.n_positions
-    tokenizer = train_dataset.tokenizer
 
-    # task_path = f"./lm-out-new-{args.model}-{args.task}"
-    task_path = f"./ssm-out-new-{args.task}"
-    if not os.path.exists(task_path):
-        os.mkdir(task_path)
-    # if args.nope:
-    #     suffix = "-nope"
-    # elif args.regularize != 0:
-    #     suffix = f"-reg{args.regularize}"
-    # else:
-    #     suffix = ""
-    summary_f = open(os.path.join(task_path, f"summary.txt"), "a")
+            training_args = TrainingArguments(
+                output_dir=output_dir,    
+                per_device_train_batch_size=per_device_bz,
+                per_device_eval_batch_size=per_device_bz,
+                max_steps=max_steps,
+                eval_strategy="steps",
+                eval_steps=3_000,
+                save_strategy="no",
+                logging_strategy="steps",
+                logging_steps=3_000,
+                learning_rate=lr,
+                weight_decay=0.01,
+                optim='adamw_torch',
+                lr_scheduler_type='linear',
+                warmup_steps=warmup_steps,
+                report_to="none",
+            )
 
-    for i in range(3):
-        print("\ninput example:")
-        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][0])))
-        print("label example:")
-        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][2])))
+            data_collator = customCollator(tokenizer.pad_token_id)
 
-    should_stop = False
-    fit_train_data = False
-    for n_layer, d_model, dropout, lr in configs: 
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=test_dataset,
+                data_collator=data_collator,
+                compute_metrics=compute_metrics,
+                callbacks=[SSMCallback],
+            )
 
-        if n_layer > 4:
-            max_steps = 60_000
-            warmup_steps = 3000
-            if fit_train_data:
+            trainer.train()
+
+            if should_stop:
                 break
-        else:
-            max_steps = 30_000
-            warmup_steps = 0
-
-        output_dir = f"{n_layer}l{d_model}d{dropout}dr{'smalllr' if lr == 1e-4 else ''}"
-        output_dir = os.path.join(task_path, output_dir)
-
-        # if args.model in ["gpt", "gpt_nope", "gpt_reg"]:
-        #     cfg = GPT2Config(vocab_size=len(tokenizer), 
-        #             n_positions=n_positions,
-        #             n_embd=d_model,
-        #             n_layer=n_layer,
-        #             n_head=n_head,
-        #             bos_token_id=tokenizer.bos_token_id, 
-        #             eos_token_id=tokenizer.eos_token_id,
-        #             pad_token_id=tokenizer.pad_token_id,
-        #             attn_pdrop=0,
-        #             resid_pdrop=0,
-        #             embd_pdrop=0,
-        #             )
-        # else: # s4 only s4 model currently
-        cfg = S4Config(vocab_size=len(tokenizer),
-                        n_embd=d_model,
-                        n_layers=n_layer,
-                        dropout=dropout
-        )
-
-                
-        # match args.model:
-        #     case "gpt":
-        #         model = GPT2LMHeadModel(cfg)
-        #     case "gpt_nope":
-        #         model = NoPEGPT2LMHeadModel(cfg)
-        #     case "gpt_reg":
-        #         model = RegGPT2LMHeadModel(cfg, args.regularize)
-        #     case "s4":
-        model = S4ForSequenceModeling(cfg)
-
-
-        training_args = TrainingArguments(
-            output_dir=output_dir,    
-            per_device_train_batch_size=per_device_bz,
-            per_device_eval_batch_size=per_device_bz,
-            max_steps=max_steps,
-            eval_strategy="steps",
-            eval_steps=3_000,
-            save_strategy="no",
-            logging_strategy="steps",
-            logging_steps=3_000,
-            learning_rate=lr,
-            weight_decay=0.01,
-            optim='adamw_torch',
-            lr_scheduler_type='linear',
-            warmup_steps=warmup_steps,
-            report_to="none",
-        )
-
-        data_collator = customCollator(tokenizer.pad_token_id)
-
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=test_dataset,
-            data_collator=data_collator,
-            compute_metrics=compute_metrics,
-            callbacks=[SSMCallback],
-        )
-
-        trainer.train()
-
-        if should_stop:
-            break
 
     
     summary_f.close()
