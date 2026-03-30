@@ -164,7 +164,7 @@ if __name__ == "__main__":
         case "mqar":
             train_dataset = MQARWordProblemDataset(
                 train_length_range, max_test_length,
-                args.key_size, args.query_fraction, args.monoid, args.monoid_n
+                key_size=args.key_size, query_fraction=args.query_fraction, monoid_type=args.monoid, monoid_n=args.monoid_n
             )
 
             test_dataset = {
