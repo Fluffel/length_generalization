@@ -71,6 +71,7 @@ if __name__ == "__main__":
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
     parser.add_argument("--seeds", type=int, default=1)
+    parser.add_argument("--job-id", type=int, default=0)
     # MQAR-specific arguments
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"],
                         help="Monoid preset for mqar_word_problem task")
@@ -190,8 +191,9 @@ if __name__ == "__main__":
         elif args.regularize != 0:
             suffix = f"-reg{args.regularize}"
         else:
-            suffix = "lm"
-        summary_f = open(os.path.join(task_path, f"summary{suffix}.txt"), "a")
+            suffix = ""
+        suffix += args.job_id if args.job_id != 0 else ""
+        summary_f = open(os.path.join(task_path, f"summarylm{suffix}.txt"), "a")
 
         for i in range(3):
             print("\ninput example:")

@@ -97,6 +97,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
     parser.add_argument("--seeds", type=int, default=1)
+    parser.add_argument("--job-id", type=str, default="")
     # parser.add_argument("--model", type=str, choices=["gpt", "gpt_nope", "gpt_reg", "s4"])
     # parser.add_argument("--nope", action="store_true")
     # parser.add_argument("--regularize", type=float, default=0.0)
@@ -111,8 +112,10 @@ if __name__ == "__main__":
                         help="Fraction of content length devoted to queries for mqar_word_problem")
     args = parser.parse_args()
 
+    print(f"Running SSM with task {args.task}, seeds {args.seeds}, job id {args.job_id}")
     # configs = [(l, d, dr, lr) for l in [1, 2, 4] for d in [16, 64, 256] for dr in [0] for lr in [1e-3, 1e-4]]
-    configs = [(l, d, dr, lr) for l in [1, 4, 8] for d in [16, 64, 256] for dr in [0, 0.1] for lr in [1e-3, 1e-4]]
+    # configs = [(l, d, dr, lr) for l in [1, 2, 4] for d in [16, 64, 256] for dr in [0] for lr in [1e-3, 1e-4]]
+    configs = [(l, d, dr, lr) for l in [8, 16] for d in [64] for dr in [0] for lr in [1e-3]]
     # configs.append((12, 12, 768, 1e-4))
     # configs = [(12, 12, 768, 1e-4)]
 
@@ -225,9 +228,8 @@ if __name__ == "__main__":
         #     suffix = f"-reg{args.regularize}"
         # else:
         #     suffix = ""
-        suffix = "ssm"
-        summary_f = open(os.path.join(task_path, f"summary{suffix}.txt"), "a")
-
+        # suffix = args.job_id if args.job_id != 0 else ""
+        summary_f = open(os.path.join(task_path, f"summaryssm{args.job_id}.txt"), "a")
         for i in range(3):
             print("\ninput example:")
             print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][0])))
