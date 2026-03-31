@@ -335,7 +335,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.create_csv:
+    if args.create:
         rows = build_or_update_csv(logs_root=args.logs_root, csv_path=args.csv)
         print(f"Wrote/updated CSV: {args.csv} ({len(rows)} rows)")
         return 0
