@@ -299,7 +299,7 @@ def main() -> int:
 
     parser.add_argument("--logs-root", type=Path, default=default_logs_root)
     parser.add_argument("--csv", type=Path, default=default_csv)
-    parser.add_argument("--create-csv", action="store_true")
+    parser.add_argument("--create", action="store_true")
     
     parser.add_argument(
         "--task",

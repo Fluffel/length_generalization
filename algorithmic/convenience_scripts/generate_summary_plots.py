@@ -79,6 +79,8 @@ def plot_task(
     rows: list[dict[str, str]],
     task: str,
     output_path: Path,
+    title: str,
+    legend_loc: str,
     include_rules: list[tuple[str, set[float] | None]],
     include_patterns: list[str],
     group_patterns: list[str],
@@ -305,14 +307,15 @@ def plot_task(
                 label=max_label,
             )
 
-    ax.set_title(f"{task}")
+    ax.set_title(title)
     ax.set_xlabel("Validation bins")
     ax.set_ylabel("Accuracy (%)")
     ax.set_xticks(x_ticks)
     ax.set_xticklabels(x_labels)
     ax.set_ylim(-10.0, 110.0)
     ax.grid(alpha=0.3)
-    ax.legend(loc="upper right", fontsize=10, frameon=False)
+    if legend_loc != "none":
+        ax.legend(loc=legend_loc, fontsize=10, frameon=False)
     fig.tight_layout()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,7 +334,14 @@ def main() -> int:
     default_csv = repo_root / "exports" / "all_summary_results.csv"
     default_plot_dir = repo_root / "exports" / "plots"
 
-    parser.add_argument("--csv", type=Path, default=default_csv)
+    parser.add_argument(
+        "--input-csv",
+        "--csv",
+        dest="input_csv",
+        type=Path,
+        default=default_csv,
+        help="Input CSV path. Default: exports/all_summary_results.csv",
+    )
     parser.add_argument(
         "--task",
         type=str,
@@ -343,10 +353,41 @@ def main() -> int:
     #     help="If set, generate a plot for --task.",
     # )
     parser.add_argument(
+        "--output",
         "--plot-path",
+        dest="output_path",
         type=Path,
         default=None,
-        help="Output PNG path. Default: exports/plots/<task>.png",
+        help="Output plot file path. Default: exports/plots/<task>.png",
+    )
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Plot title. Default: --task value.",
+    )
+    parser.add_argument(
+        "--legend-loc",
+        type=str,
+        default="best",
+        choices=[
+            "best",
+            "upper right",
+            "upper left",
+            "lower left",
+            "lower right",
+            "right",
+            "center left",
+            "center right",
+            "lower center",
+            "upper center",
+            "center",
+            "none",
+        ],
+        help=(
+            "Legend location. Default is 'best' (automatic placement). "
+            "Use 'none' to hide the legend."
+        ),
     )
     parser.add_argument(
         "--include",
@@ -403,19 +444,22 @@ def main() -> int:
     if not args.task:
         raise SystemExit("--task is required.")
 
-    rows = load_csv_rows(args.csv)
+    rows = load_csv_rows(args.input_csv)
     if not rows:
         raise SystemExit(
-            f"No CSV rows found at {args.csv}. "
+            f"No CSV rows found at {args.input_csv}. "
             "Generate it first with generate_summary_csv.py."
         )
 
     include_rules = [parse_include_rule(v) for v in args.include]
-    plot_path = args.plot_path or (default_plot_dir / f"{args.task}.png")
+    plot_path = args.output_path or (default_plot_dir / f"{args.task}.png")
+    title = args.title or args.task
     plot_task(
         rows=rows,
         task=args.task,
         output_path=plot_path,
+        title=title,
+        legend_loc=args.legend_loc,
         include_rules=include_rules,
         include_patterns=args.include_pattern,
         group_patterns=args.group_pattern,

@@ -23,7 +23,7 @@ This workflow is now split into two scripts:
 
 Build or update the unified CSV (default: `exports/all_summary_results.csv`):
 ```
-python algorithmic/convenience_scripts/generate_summary_csv.py --create-csv
+python algorithmic/convenience_scripts/generate_summary_csv.py --create
 ```
 
 List models/results for one task given an existing .csv file:
@@ -49,6 +49,10 @@ The listing prints one line per `(task, model, learning_rate)` with per-bin mean
 
 Usage notes (plot script):
 - `--task` is required and must match the task directory name in the CSV (e.g. `sort`, `bin_majority`).
+- `--input-csv` sets the CSV file to read (alias: `--csv`).
+- `--output` sets the output plot file path (alias: `--plot-path`).
+- `--title` sets a custom plot title (default: task name).
+- `--legend-loc` controls legend placement (`best` by default for automatic placement; use `none` to hide).
 - `--include` filters by exact model and optional learning rates: `model` or `model:lr1,lr2` (repeatable; OR across flags).
 - `--include-pattern` filters by model-spec patterns (repeatable; OR across flags; order-insensitive token matching).
 - `--group-pattern` groups matching models into one line per pattern.
@@ -64,6 +68,8 @@ Example: Plot `sort` while keeping only `4l`/`8l` and `hyb` models. Generate a p
 ```
 python algorithmic/convenience_scripts/generate_summary_plots.py \
   --task sort \
+  --output exports/plots/sort_custom.png \
+  --title "Sort Task (Selected Models)" \
   --include-pattern 4l \
   --include-pattern 8l \
   --include-pattern hyb \
