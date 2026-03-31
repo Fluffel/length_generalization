@@ -2,150 +2,19 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import re
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 
-LINE_RE = re.compile(
-    r"^(?P<model>\S+)\s+.*?"
-    r"eval_len0-50_acc:\s*(?P<acc_0_50>[0-9]*\.?[0-9]+)\s+"
-    r"eval_len51-100_acc:\s*(?P<acc_51_100>[0-9]*\.?[0-9]+)\s+"
-    r"eval_len101-150_acc:\s*(?P<acc_101_150>[0-9]*\.?[0-9]+)\s+"
-    r"lr:\s*(?P<lr>[0-9]*\.?[0-9]+(?:e-?[0-9]+)?)\s*$"
+from generate_summary_csv import (
+    BUCKETS,
+    filter_rows,
+    load_csv_rows,
+    matches_pattern,
+    parse_include_rule,
 )
-
-BUCKETS = ("eval_len0-50", "eval_len51-100", "eval_len101-150")
-
-CSV_COLUMNS = [
-    "task",
-    "source_file",
-    "source_line",
-    "model",
-    "learning_rate",
-    "bucket",
-    "accuracy",
-]
-
-
-def parse_summary_line(line: str, task: str, source_file: Path, source_line: int) -> list[dict[str, str | int | float]]:
-    m = LINE_RE.match(line.strip())
-    if m is None:
-        return []
-
-    model = m.group("model")
-    lr = float(m.group("lr"))
-    acc_0_50 = float(m.group("acc_0_50"))
-    acc_51_100 = float(m.group("acc_51_100"))
-    acc_101_150 = float(m.group("acc_101_150"))
-
-    return [
-        {
-            "task": task,
-            "source_file": str(source_file),
-            "source_line": source_line,
-            "model": model,
-            "learning_rate": lr,
-            "bucket": "eval_len0-50",
-            "accuracy": acc_0_50,
-        },
-        {
-            "task": task,
-            "source_file": str(source_file),
-            "source_line": source_line,
-            "model": model,
-            "learning_rate": lr,
-            "bucket": "eval_len51-100",
-            "accuracy": acc_51_100,
-        },
-        {
-            "task": task,
-            "source_file": str(source_file),
-            "source_line": source_line,
-            "model": model,
-            "learning_rate": lr,
-            "bucket": "eval_len101-150",
-            "accuracy": acc_101_150,
-        },
-    ]
-
-
-def load_csv_rows(csv_path: Path) -> list[dict[str, str]]:
-    if not csv_path.exists():
-        return []
-    with csv_path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
-
-
-def write_csv_rows(csv_path: Path, rows: list[dict[str, str | int | float]]) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def build_or_update_csv(logs_root: Path, csv_path: Path) -> list[dict[str, str]]:
-    existing_rows = load_csv_rows(csv_path)
-
-    seen_keys = set()
-    merged_rows: list[dict[str, str | int | float]] = []
-
-    for row in existing_rows:
-        key = (
-            row["source_file"],
-            int(row["source_line"]),
-            row["bucket"],
-            row["model"],
-            float(row["learning_rate"]),
-            row["task"],
-        )
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        merged_rows.append(row)
-
-    summary_files = sorted(logs_root.glob("**/summary.txt"))
-    for summary_file in summary_files:
-        task = summary_file.parent.name
-        with summary_file.open("r") as f:
-            for idx, raw_line in enumerate(f, start=1):
-                parsed_rows = parse_summary_line(
-                    raw_line, task=task, source_file=summary_file, source_line=idx
-                )
-                for row in parsed_rows:
-                    key = (
-                        str(row["source_file"]),
-                        int(row["source_line"]),
-                        str(row["bucket"]),
-                        str(row["model"]),
-                        float(row["learning_rate"]),
-                        str(row["task"]),
-                    )
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    merged_rows.append(row)
-
-    write_csv_rows(csv_path, merged_rows)
-    return load_csv_rows(csv_path)
-
-
-def _parse_include_rule(include_value: str) -> tuple[str, set[float] | None]:
-    if ":" in include_value:
-        model, lr_part = include_value.split(":", 1)
-        model = model.strip()
-        lr_part = lr_part.strip()
-        if lr_part == "*" or lr_part == "":
-            return model, None
-        lr_values = {float(x.strip()) for x in lr_part.split(",") if x.strip()}
-        return model, lr_values
-    return include_value.strip(), None
-
 
 def _sample_std(values: list[float]) -> float:
     n = len(values)
@@ -156,29 +25,54 @@ def _sample_std(values: list[float]) -> float:
     return math.sqrt(var)
 
 
-def _filter_rows(
-    rows: list[dict[str, str]],
-    task: str,
-    include_rules: list[tuple[str, set[float] | None]],
-) -> list[dict[str, str]]:
-    task_rows = [r for r in rows if r["task"] == task]
-    if not include_rules:
-        return task_rows
+def _group_label_for_model(model: str, group_patterns: list[str]) -> str | None:
+    for pattern in group_patterns:
+        if matches_pattern(model, pattern):
+            return pattern
+    return None
 
-    filtered = []
-    for row in task_rows:
-        model = row["model"]
-        lr = float(row["learning_rate"])
-        matched = False
-        for m_name, lrs in include_rules:
-            if model != m_name:
-                continue
-            if lrs is None or lr in lrs:
-                matched = True
+
+def _group_spec_from_models(models: set[str]) -> str:
+    if not models:
+        return ""
+
+    model_list = sorted(models)
+    parsed_models: list[list[str]] = []
+    for model in model_list:
+        # Preserve original spec order from CSV model strings.
+        # Chunks are either alpha-only (e.g. "ssm") or num+alpha (e.g. "4l", "0.1dr").
+        chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", model.lower())
+        parsed_models.append(chunks)
+
+    max_len = max(len(chunks) for chunks in parsed_models)
+    parts: list[str] = []
+    for i in range(max_len):
+        tokens_at_pos = [chunks[i] for chunks in parsed_models if i < len(chunks)]
+        if not tokens_at_pos:
+            continue
+        uniq_tokens = sorted(set(tokens_at_pos))
+        if len(uniq_tokens) == 1:
+            parts.append(uniq_tokens[0])
+            continue
+
+        # If position varies only by numeric value of the same key, collapse as x/y<key>.
+        key_to_vals: dict[str, set[str]] = defaultdict(set)
+        valid_num_key = True
+        for token in uniq_tokens:
+            m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
+            if not m:
+                valid_num_key = False
                 break
-        if matched:
-            filtered.append(row)
-    return filtered
+            key_to_vals[m.group(2)].add(m.group(1))
+        if valid_num_key and len(key_to_vals) == 1:
+            key = next(iter(key_to_vals.keys()))
+            vals = sorted(key_to_vals[key], key=lambda x: float(x))
+            parts.append(f"{'/'.join(vals)}{key}")
+        else:
+            # Fallback for mixed tokens at same position.
+            parts.append("/".join(uniq_tokens))
+
+    return "".join(parts)
 
 
 def plot_task(
@@ -186,6 +80,10 @@ def plot_task(
     task: str,
     output_path: Path,
     include_rules: list[tuple[str, set[float] | None]],
+    include_patterns: list[str],
+    group_patterns: list[str],
+    include_max: bool,
+    include_max_only: bool,
 ) -> None:
     try:
         import matplotlib as mpl
@@ -199,53 +97,182 @@ def plot_task(
     mpl.rcParams["axes.titleweight"] = "bold"
     sns.set_theme(style="whitegrid", palette="dark6", context="paper", font_scale=2.0)
 
-    filtered_rows = _filter_rows(rows, task=task, include_rules=include_rules)
+    filtered_rows = filter_rows(
+        rows,
+        tasks=[task],
+        include_rules=include_rules,
+        include_patterns=include_patterns,
+    )
+    print(f"Filtered rows: {len(filtered_rows)}")
     if not filtered_rows:
         raise SystemExit(
             f"No rows to plot for task '{task}'. "
-            "Check --task and --include filters."
+            "Check --task and include filters/patterns."
         )
 
-    grouped: dict[tuple[str, float, str], list[float]] = defaultdict(list)
+    # Keep the raw datapoints per (model, lr, bucket) so include-max can select
+    # per-bin best contributors and then build a derived max{...} series.
+    datapoint_bucket_vals: dict[tuple[str, float, str], list[float]] = defaultdict(list)
     for row in filtered_rows:
-        grouped[(row["model"], float(row["learning_rate"]), row["bucket"])].append(
-            float(row["accuracy"])
-        )
+        key = (row["model"], float(row["learning_rate"]), row["bucket"])
+        datapoint_bucket_vals[key].append(float(row["accuracy"]))
 
-    series_keys = sorted({(k[0], k[1]) for k in grouped.keys()}, key=lambda x: (x[0], x[1]))
-    if not series_keys:
-        raise SystemExit("No model/lr series found after filtering.")
+    series_to_bucket_vals: dict[tuple[str, str], list[float]] = defaultdict(list)
+    series_to_datapoints: dict[str, set[tuple[str, float]]] = defaultdict(set)
+    series_to_models: dict[str, set[str]] = defaultdict(set)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    if group_patterns:
+        # Grouping behavior:
+        # - explicit patterns group matching models into aggregated series
+        # - unmatched models remain individual series by default
+        # - if "*" is present, unmatched models are aggregated into one final group
+        wildcard_rest = "*" in group_patterns
+        explicit_group_patterns = [p for p in group_patterns if p != "*"]
+        models_by_group: dict[str, set[str]] = defaultdict(set)
+        grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+        grouped_datapoints: dict[str, set[tuple[str, float]]] = defaultdict(set)
+        for row in filtered_rows:
+            datapoint = (row["model"], float(row["learning_rate"]))
+            group_label = _group_label_for_model(row["model"], explicit_group_patterns)
+            if group_label is None:
+                if wildcard_rest:
+                    group_label = "*"
+                    models_by_group[group_label].add(row["model"])
+                    grouped[(group_label, row["bucket"])].append(float(row["accuracy"]))
+                    grouped_datapoints[group_label].add(datapoint)
+                else:
+                    # Keep default behavior for non-grouped rows: one line per model/lr.
+                    series_label = f"{row['model']} | lr={float(row['learning_rate']):g}"
+                    grouped[(series_label, row["bucket"])].append(float(row["accuracy"]))
+                    grouped_datapoints[series_label].add(datapoint)
+            else:
+                models_by_group[group_label].add(row["model"])
+                grouped[(group_label, row["bucket"])].append(float(row["accuracy"]))
+                grouped_datapoints[group_label].add(datapoint)
+
+        relabeled_grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+        relabeled_datapoints: dict[str, set[tuple[str, float]]] = defaultdict(set)
+        relabeled_models: dict[str, set[str]] = defaultdict(set)
+        for (base_group, bucket), vals in grouped.items():
+            if base_group in models_by_group:
+                group_spec = _group_spec_from_models(models_by_group.get(base_group, set()))
+                final_group = group_spec if group_spec else base_group
+            else:
+                final_group = base_group
+            relabeled_grouped[(final_group, bucket)].extend(vals)
+            relabeled_datapoints[final_group].update(grouped_datapoints.get(base_group, set()))
+            relabeled_models[final_group].update({m for m, _ in grouped_datapoints.get(base_group, set())})
+        grouped = relabeled_grouped
+
+        series_labels = sorted({k[0] for k in grouped.keys()})
+        if not series_labels:
+            raise SystemExit("No grouped series found. Check --group-pattern values.")
+        series_to_bucket_vals = grouped
+        series_to_datapoints = relabeled_datapoints
+        series_to_models = relabeled_models
+    else:
+        grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+        for row in filtered_rows:
+            series_label = f"{row['model']} | lr={float(row['learning_rate']):g}"
+            grouped[(series_label, row["bucket"])].append(float(row["accuracy"]))
+            series_to_datapoints[series_label].add((row["model"], float(row["learning_rate"])))
+            series_to_models[series_label].add(row["model"])
+        series_labels = sorted({k[0] for k in grouped.keys()})
+        if not series_labels:
+            raise SystemExit("No model/lr series found after filtering.")
+        series_to_bucket_vals = grouped
+
+    fig, ax = plt.subplots(figsize=(12, 7))
     x_ticks = [10, 20, 30]
     x_labels = ["Bin 1", "Bin 2", "Bin 3"]
     bucket_to_x = dict(zip(BUCKETS, x_ticks))
 
-    for model, lr in series_keys:
-        means: list[float] = []
-        stds: list[float] = []
-        for bucket in BUCKETS:
-            vals = grouped.get((model, lr, bucket), [])
-            if vals:
-                means.append(mean(vals) * 100.0)
-                stds.append(_sample_std(vals) * 100.0)
-            else:
-                means.append(float("nan"))
-                stds.append(float("nan"))
+    # Optional derived max-series per line:
+    # For each plotted line, select datapoints that achieve the maximum mean in any bin.
+    # Build max{...} from the union of those winners and plot dotted in the same color.
+    max_series: dict[str, tuple[str, list[float], list[float]]] = {}
+    if include_max or include_max_only:
+        for series_label in series_labels:
+            datapoints = series_to_datapoints.get(series_label, set())
+            if not datapoints:
+                continue
+            winner_points: set[tuple[str, float]] = set()
+            for bucket in BUCKETS:
+                per_point_means: list[tuple[tuple[str, float], float]] = []
+                for dp in datapoints:
+                    vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
+                    if vals:
+                        per_point_means.append((dp, mean(vals)))
+                if not per_point_means:
+                    continue
+                max_mean = max(v for _, v in per_point_means)
+                for dp, v in per_point_means:
+                    if v == max_mean:
+                        winner_points.add(dp)
+            if not winner_points:
+                continue
 
-        label = f"{model} | lr={lr:g}"
+            winner_models = {m for m, _ in winner_points}
+            max_suffix = _group_spec_from_models(winner_models) or series_label
+            max_label = f"max:{max_suffix}"
+            max_means: list[float] = []
+            max_stds: list[float] = []
+            for bucket in BUCKETS:
+                vals: list[float] = []
+                for dp in winner_points:
+                    vals.extend(datapoint_bucket_vals.get((dp[0], dp[1], bucket), []))
+                if vals:
+                    max_means.append(mean(vals) * 100.0)
+                    max_stds.append(_sample_std(vals) * 100.0)
+                else:
+                    max_means.append(float("nan"))
+                    max_stds.append(float("nan"))
+            max_series[series_label] = (max_label, max_means, max_stds)
+
+    stem_colors: dict[str, str] = {}
+    for series_label in series_labels:
         xs = [bucket_to_x[b] for b in BUCKETS]
-        ax.errorbar(
-            xs,
-            means,
-            yerr=stds,
-            marker="o",
-            linestyle="solid",
-            linewidth=2.0,
-            capsize=5,
-            elinewidth=1.5,
-            label=label,
-        )
+
+        if not include_max_only:
+            means: list[float] = []
+            stds: list[float] = []
+            for bucket in BUCKETS:
+                vals = series_to_bucket_vals.get((series_label, bucket), [])
+                if vals:
+                    means.append(mean(vals) * 100.0)
+                    stds.append(_sample_std(vals) * 100.0)
+                else:
+                    means.append(float("nan"))
+                    stds.append(float("nan"))
+
+            stem_line = ax.errorbar(
+                xs,
+                means,
+                yerr=stds,
+                marker="o",
+                linestyle="solid",
+                linewidth=2.0,
+                capsize=5,
+                elinewidth=1.5,
+                label=series_label,
+            )
+            stem_colors[series_label] = stem_line.lines[0].get_color()
+
+        if series_label in max_series:
+            max_label, max_means, max_stds = max_series[series_label]
+            dotted_color = stem_colors.get(series_label, None)
+            ax.errorbar(
+                xs,
+                max_means,
+                yerr=max_stds,
+                marker="o",
+                linestyle="dotted",
+                linewidth=2.0,
+                capsize=5,
+                elinewidth=1.5,
+                color=dotted_color,
+                label=max_label,
+            )
 
     ax.set_title(f"{task}")
     ax.set_xlabel("Validation bins")
@@ -254,7 +281,7 @@ def plot_task(
     ax.set_xticklabels(x_labels)
     ax.set_ylim(-10.0, 110.0)
     ax.grid(alpha=0.3)
-    ax.legend(fontsize=10, frameon=False)
+    ax.legend(loc="upper right", fontsize=10, frameon=False)
     fig.tight_layout()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,27 +292,25 @@ def plot_task(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Build/update a unified CSV from logs/**/summary.txt and create per-task "
-            "plots with optional model/lr filtering."
+            "Create per-task plots from the unified CSV with optional model/lr "
+            "filtering and feature-based grouping."
         )
     )
     repo_root = Path(__file__).resolve().parents[2]
-    default_logs_root = repo_root / "logs"
     default_csv = repo_root / "exports" / "all_summary_results.csv"
     default_plot_dir = repo_root / "exports" / "plots"
 
-    parser.add_argument("--logs-root", type=Path, default=default_logs_root)
     parser.add_argument("--csv", type=Path, default=default_csv)
     parser.add_argument(
         "--task",
         type=str,
         help="Task directory name (e.g., lm-out-new-sort). Required for plotting.",
     )
-    parser.add_argument(
-        "--plot",
-        action="store_true",
-        help="If set, generate a plot for --task.",
-    )
+    # parser.add_argument(
+    #     "--plot",
+    #     action="store_true",
+    #     help="If set, generate a plot for --task.",
+    # )
     parser.add_argument(
         "--plot-path",
         type=Path,
@@ -301,23 +326,70 @@ def main() -> int:
             "(repeat flag for multiple models). Example: --include 1l1h64d:0.001,0.0001"
         ),
     )
+    parser.add_argument(
+        "--include-pattern",
+        action="append",
+        default=[],
+        help=(
+            "Pattern-based OR filter over model strings. Supports feature matching "
+            "(order-insensitive), e.g. --include-pattern l1h1 or --include-pattern h1l1. "
+            "You can repeat the flag and values are combined with OR."
+        ),
+    )
+    parser.add_argument(
+        "--group-pattern",
+        action="append",
+        default=[],
+        help=(
+            "Aggregate matching models into one series per pattern. Unmatched models stay "
+            "as individual series unless '*' is provided. Use --group-pattern \\* to group "
+            "the remaining unmatched models into one final group (escape * in shell). "
+            "Repeat for multiple groups. Example: --group-pattern ssm --group-pattern l1h1 "
+            "--group-pattern \\*"
+        ),
+    )
+    max_group = parser.add_mutually_exclusive_group()
+    max_group.add_argument(
+        "--include-max",
+        action="store_true",
+        help=(
+            "For each plotted line, add a dotted max:... line from datapoints that "
+            "are bin-wise maxima within that line."
+        ),
+    )
+    max_group.add_argument(
+        "--include-max-only",
+        action="store_true",
+        help=(
+            "Plot only dotted max:... lines (omit the original stem lines). "
+            "Mutually exclusive with --include-max."
+        ),
+    )
     args = parser.parse_args()
 
-    rows = build_or_update_csv(logs_root=args.logs_root, csv_path=args.csv)
-    print(f"Wrote/updated CSV: {args.csv} ({len(rows)} rows)")
-
-    if not args.plot:
-        return 0
+    # if not args.plot:
+    #     raise SystemExit("Use --plot to generate a plot.")
     if not args.task:
-        raise SystemExit("--task is required when using --plot")
+        raise SystemExit("--task is required.")
 
-    include_rules = [_parse_include_rule(v) for v in args.include]
+    rows = load_csv_rows(args.csv)
+    if not rows:
+        raise SystemExit(
+            f"No CSV rows found at {args.csv}. "
+            "Generate it first with generate_summary_csv.py."
+        )
+
+    include_rules = [parse_include_rule(v) for v in args.include]
     plot_path = args.plot_path or (default_plot_dir / f"{args.task}.png")
     plot_task(
         rows=rows,
         task=args.task,
         output_path=plot_path,
         include_rules=include_rules,
+        include_patterns=args.include_pattern,
+        group_patterns=args.group_pattern,
+        include_max=args.include_max,
+        include_max_only=args.include_max_only,
     )
     print(f"Wrote plot: {plot_path}")
     return 0

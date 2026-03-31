@@ -14,32 +14,62 @@ Datasets can be inspected with a script in `convenience_scripts/print_dataset_wo
 
 #### Aggregating Summary Results and Plotting
 
-You can aggregate all `logs/**/summary.txt` files into one CSV and generate per-task plots with:
-`convenience_scripts/generate_summary_plots.py`.
+This workflow is now split into two scripts:
 
-Build or update the unified CSV (default: `logs/all_summary_results.csv`):
+- `convenience_scripts/generate_summary_csv.py`: build/update the unified CSV and inspect model results.
+- `convenience_scripts/generate_summary_plots.py`: generate plots from the unified CSV only.
+
+##### 1) Build/update CSV and list results
+
+Build or update the unified CSV (default: `exports/all_summary_results.csv`):
 ```
-python algorithmic/convenience_scripts/generate_summary_plots.py
+python algorithmic/convenience_scripts/generate_summary_csv.py --create-csv
 ```
 
-Generate a plot for one task (all models and learning rates in that task):
+List models/results for one task given an existing .csv file:
+```
+python algorithmic/convenience_scripts/generate_summary_csv.py \
+  --list-models \
+  --task bin_majority
+  
+```
+
+List models/results for multiple tasks and patterns:
+```
+python algorithmic/convenience_scripts/generate_summary_csv.py \
+  --list-models \
+  --task bin_majority --task majority,mqar \
+  --include-pattern ssm \
+  --include-pattern h1l1
+```
+
+The listing prints one line per `(task, model, learning_rate)` with per-bin mean accuracy and sample count.
+
+##### 2) Generate plots from CSV
+
+Usage notes (plot script):
+- `--task` is required and must match the task directory name in the CSV (e.g. `sort`, `bin_majority`).
+- `--include` filters by exact model and optional learning rates: `model` or `model:lr1,lr2` (repeatable; OR across flags).
+- `--include-pattern` filters by model-spec patterns (repeatable; OR across flags; order-insensitive token matching).
+- `--group-pattern` groups matching models into one line per pattern.
+- If `--group-pattern` is used without `\*`, unmatched models are still plotted individually.
+- Use `--group-pattern \*` to group all remaining unmatched models into one final group (`\*` must be escaped in shell).
+- `--include-max` adds dotted `max:...` lines per plotted line (original lines remain).
+- `--include-max-only` plots only dotted `max:...` lines (mutually exclusive with `--include-max`).
+- If multiple datapoints map to a plotted series and bucket, mean and sample std are shown as error bars.
+
+Note: The --include-max flag adds a plot line over all datapoints that have a maximum value in any of the three bins. The max-plot line shows the mean and standard deviation over those (at most 3) datapoints.
+
+Example: Plot `sort` while keeping only `4l`/`8l` and `hyb` models. Generate a plot-line for subgroups `16d` and `256d` for the ssm model, and group the remaining models into with `\*`. Additionally, add dotted max lines on top of all stem lines.
 ```
 python algorithmic/convenience_scripts/generate_summary_plots.py \
-  --plot \
-  --task lm-out-new-sort
+  --task sort \
+  --include-pattern 4l \
+  --include-pattern 8l \
+  --include-pattern hyb \
+  --group-pattern ssm16d \
+  --group-pattern ssm256d \
+  --group-pattern hyb \
+  --group-pattern \* \
+  --include-max
 ```
-
-Generate a filtered plot by model and learning rate:
-```
-python algorithmic/convenience_scripts/generate_summary_plots.py \
-  --plot \
-  --task lm-out-new-sort \
-  --include 1l1h64d:0.001,0.0001 \
-  --include 1l1h256d:0.0001
-```
-
-Notes:
-- `--task` is the directory name containing the corresponding `summary.txt`.
-- `--include MODEL` keeps all learning rates for that model.
-- `--include MODEL:lr1,lr2` keeps only selected learning rates.
-- If multiple datapoints exist for the same `(task, model, learning_rate, bucket)`, the plot shows the mean with `+- std` error bars.
