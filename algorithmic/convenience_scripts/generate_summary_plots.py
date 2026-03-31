@@ -196,6 +196,15 @@ def plot_task(
             datapoints = series_to_datapoints.get(series_label, set())
             if not datapoints:
                 continue
+
+            point_vec: dict[tuple[str, float], list[float]] = {}
+            for dp in datapoints:
+                vec: list[float] = []
+                for bucket in BUCKETS:
+                    vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
+                    vec.append(mean(vals) if vals else float("-inf"))
+                point_vec[dp] = vec
+
             winner_points: set[tuple[str, float]] = set()
             for bucket in BUCKETS:
                 per_point_means: list[tuple[tuple[str, float], float]] = []
@@ -209,6 +218,28 @@ def plot_task(
                 for dp, v in per_point_means:
                     if v == max_mean:
                         winner_points.add(dp)
+            if not winner_points:
+                continue
+
+            # Exclude winners that are dominated by another datapoint in all bins.
+            # A point p is dominated if another point q has q_i >= p_i for every bin
+            # and q_j > p_j for at least one bin.
+            pruned_winners: set[tuple[str, float]] = set()
+            for p in winner_points:
+                p_vec = point_vec[p]
+                dominated = False
+                for q in datapoints:
+                    if q == p:
+                        continue
+                    q_vec = point_vec[q]
+                    if all(qv >= pv for qv, pv in zip(q_vec, p_vec)) and any(
+                        qv > pv for qv, pv in zip(q_vec, p_vec)
+                    ):
+                        dominated = True
+                        break
+                if not dominated:
+                    pruned_winners.add(p)
+            winner_points = pruned_winners
             if not winner_points:
                 continue
 
