@@ -12,9 +12,59 @@ from generate_summary_csv import (
     BUCKETS,
     filter_rows,
     load_csv_rows,
-    matches_pattern,
     parse_include_rule,
 )
+
+
+def _extract_feature_tokens(value: str) -> list[tuple[str, str]]:
+    tokens = re.findall(
+        r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+[0-9]+(?:\.[0-9]+)?",
+        value.lower(),
+    )
+    features: list[tuple[str, str]] = []
+    for token in tokens:
+        m_alpha_num = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", token)
+        if m_alpha_num:
+            features.append((m_alpha_num.group(1), m_alpha_num.group(2)))
+            continue
+        m_num_alpha = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
+        if m_num_alpha:
+            features.append((m_num_alpha.group(2), m_num_alpha.group(1)))
+    return features
+
+
+def matches_pattern(model: str, pattern: str) -> bool:
+    model_l = model.lower()
+    pattern_l = pattern.lower().strip()
+    if not pattern_l:
+        return False
+
+    pattern_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", pattern_l)
+    if not pattern_chunks:
+        return pattern_l in model_l
+
+    for chunk in pattern_chunks:
+        if chunk not in model_l:
+            return False
+
+    pattern_features = _extract_feature_tokens(" ".join(pattern_chunks))
+    model_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", model_l)
+    model_features = set(_extract_feature_tokens(" ".join(model_chunks)))
+    for feat in pattern_features:
+        if feat not in model_features:
+            return False
+
+    remaining = pattern_l
+    for chunk in pattern_chunks:
+        pos = remaining.find(chunk)
+        if pos != -1:
+            remaining = remaining[:pos] + remaining[pos + len(chunk) :]
+    remaining = remaining.strip()
+    if remaining:
+        return remaining in model_l
+
+    return True
+
 
 def _sample_std(values: list[float]) -> float:
     n = len(values)

@@ -172,6 +172,17 @@ def matches_pattern(model: str, pattern: str) -> bool:
     # Parse pattern with the same non-overlapping chunk logic used for models.
     # This handles cases like "ssm16d" as ["ssm", "16d"].
     pattern_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", pattern_l)
+    if not pattern_chunks:
+        return pattern_l in model_l
+
+    # Each chunk must appear in the model. Otherwise patterns like "hyb256d" would
+    # only constrain ("d","256") via extract_feature_tokens (letters-only chunks
+    # are not features) and the old "leftovers" regex wrongly matched "hyb256" as
+    # [a-z]+[0-9]+, leaving "d" and matching almost every model.
+    for chunk in pattern_chunks:
+        if chunk not in model_l:
+            return False
+
     pattern_features = extract_feature_tokens(" ".join(pattern_chunks))
     # Model specs are concatenated chunks of {number?}{string}, e.g. ssm4l256d0.1dr.
     # Parse chunks this way so "4l" is recognized in "ssm4l..." (non-overlapping).
@@ -181,16 +192,16 @@ def matches_pattern(model: str, pattern: str) -> bool:
         if feat not in model_features:
             return False
 
-    leftovers = re.sub(
-        r"[a-z]+[0-9]+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?[a-z]+",
-        "",
-        pattern_l,
-    ).strip()
-    if leftovers:
-        return leftovers in model_l
+    # Characters not covered by chunk findall (e.g. "_" in "foo_8l") must still match.
+    remaining = pattern_l
+    for chunk in pattern_chunks:
+        pos = remaining.find(chunk)
+        if pos != -1:
+            remaining = remaining[:pos] + remaining[pos + len(chunk) :]
+    remaining = remaining.strip()
+    if remaining:
+        return remaining in model_l
 
-    if not pattern_features:
-        return pattern_l in model_l
     return True
 
 
@@ -286,6 +297,80 @@ def print_models(rows: list[dict[str, str]]) -> None:
             )
 
 
+def _select_max_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Keep only rows belonging to max-model datapoints per task.
+    A datapoint is (model, learning_rate). We select datapoints that:
+      1) achieve the per-bin maximum mean for at least one bin, and
+      2) are not dominated in all bins by another datapoint.
+    """
+    rows_by_task: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        rows_by_task[row["task"]].append(row)
+
+    selected_keys: set[tuple[str, str, float]] = set()
+    for task, task_rows in rows_by_task.items():
+        datapoint_bucket_vals: dict[tuple[str, float, str], list[float]] = defaultdict(list)
+        datapoints: set[tuple[str, float]] = set()
+        for row in task_rows:
+            model = row["model"]
+            lr = float(row["learning_rate"])
+            bucket = row["bucket"]
+            datapoints.add((model, lr))
+            datapoint_bucket_vals[(model, lr, bucket)].append(float(row["accuracy"]))
+
+        if not datapoints:
+            continue
+
+        point_vec: dict[tuple[str, float], list[float]] = {}
+        for dp in datapoints:
+            vec: list[float] = []
+            for bucket in BUCKETS:
+                vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
+                vec.append(mean(vals) if vals else float("-inf"))
+            point_vec[dp] = vec
+
+        winner_points: set[tuple[str, float]] = set()
+        for bucket in BUCKETS:
+            per_point_means: list[tuple[tuple[str, float], float]] = []
+            for dp in datapoints:
+                vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
+                if vals:
+                    per_point_means.append((dp, mean(vals)))
+            if not per_point_means:
+                continue
+            max_mean = max(v for _, v in per_point_means)
+            for dp, v in per_point_means:
+                if v == max_mean:
+                    winner_points.add(dp)
+
+        # Remove winners dominated by another datapoint in all bins.
+        pruned_winners: set[tuple[str, float]] = set()
+        for p in winner_points:
+            p_vec = point_vec[p]
+            dominated = False
+            for q in datapoints:
+                if q == p:
+                    continue
+                q_vec = point_vec[q]
+                if all(qv >= pv for qv, pv in zip(q_vec, p_vec)) and any(
+                    qv > pv for qv, pv in zip(q_vec, p_vec)
+                ):
+                    dominated = True
+                    break
+            if not dominated:
+                pruned_winners.add(p)
+
+        for model, lr in pruned_winners:
+            selected_keys.add((task, model, lr))
+
+    return [
+        row
+        for row in rows
+        if (row["task"], row["model"], float(row["learning_rate"])) in selected_keys
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -333,6 +418,14 @@ def main() -> int:
         action="store_true",
         help="Print matching models and per-bin mean results from the CSV.",
     )
+    parser.add_argument(
+        "--include-max-only",
+        action="store_true",
+        help=(
+            "When used with --list-models, keep only models that are max contributors "
+            "per task across bins (with dominated models removed)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.create:
@@ -352,6 +445,8 @@ def main() -> int:
         include_rules=include_rules,
         include_patterns=args.include_pattern,
     )
+    if args.include_max_only:
+        filtered_rows = _select_max_rows(filtered_rows)
     print_models(filtered_rows)
     return 0
 
