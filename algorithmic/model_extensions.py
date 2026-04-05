@@ -5,6 +5,46 @@ import torch
 import torch.nn as nn
 
 from einops import rearrange, repeat
+from transformers.models.gpt2.modeling_gpt2 import Conv1D, ACT2FN
+
+#  ================================
+#  GPT-2 MLP module taken from the transformers library
+#  ================================
+
+class CustomMLP(nn.Module):
+    def __init__(self, intermediate_size, n_layers: int, config):
+        super().__init__()
+        # Accept both GPT2Config (uses hidden_size/activation_function/resid_pdrop)
+        # and S4Config/HybridConfig (use n_embd/dropout).
+        embed_dim = getattr(config, "hidden_size", None) or config.n_embd
+        act_name = getattr(config, "activation_function", "gelu_new")
+        dropout_p = getattr(config, "resid_pdrop", getattr(config, "dropout", 0.0))
+        self.layers = nn.ModuleList([
+            Conv1D(intermediate_size, embed_dim)
+            for _ in range(n_layers)
+        ])
+        self.act = ACT2FN[act_name]
+        self.dropout = nn.Dropout(dropout_p)
+
+    def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
+        if not self.layers:
+            return hidden_states
+        hidden_states = hidden_states.contiguous()
+        for layer in self.layers:
+            hidden_states = layer(hidden_states)
+            hidden_states = self.act(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        return hidden_states
+
+def set_identity_layernorms(module):
+    """
+    Recursively replace all nn.LayerNorm modules in `module` with nn.Identity.
+    """
+    for name, child in module.named_children():
+        if isinstance(child, nn.LayerNorm):
+            setattr(module, name, nn.Identity())
+        else:
+            set_identity_layernorms(child)
 
 # ===================
 # S4 modules (https://github.com/state-spaces/s4)
@@ -110,10 +150,11 @@ class S4D(nn.Module):
         self.dropout = dropout_fn(dropout) if dropout > 0.0 else nn.Identity()
 
         # position-wise output transform to mix features
-        self.output_linear = nn.Sequential(
-            nn.Conv1d(self.h, 2*self.h, kernel_size=1),
-            nn.GLU(dim=-2),
-        )
+        # self.mlp = nn.Sequential(
+        #     nn.Conv1d(self.h, 2*self.h, kernel_size=1),
+        #     nn.GLU(dim=-2),
+        # )
+
 
     def forward(self, u, **kwargs): # absorbs return_output and transformer src mask
         """ Input and output shape (B, H, L) """
@@ -132,6 +173,6 @@ class S4D(nn.Module):
         y = y + u * self.D.unsqueeze(-1)
 
         y = self.dropout(self.activation(y))
-        y = self.output_linear(y)
+        # y = self.mlp(y)
         if not self.transposed: y = y.transpose(-1, -2)
         return y, None # Return a dummy state to satisfy this repo's interface, but this can be modified
