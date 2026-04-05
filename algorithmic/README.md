@@ -43,6 +43,15 @@ python algorithmic/convenience_scripts/generate_summary_csv.py \
   --include-pattern h1l1
 ```
 
+List only max-model contributors (same max criterion as plot `--include-max-only`):
+```
+python algorithmic/convenience_scripts/generate_summary_csv.py \
+  --list-models \
+  --task mqar \
+  --include-pattern ssm \
+  --include-max-only
+```
+
 The listing prints one line per `(task, model, learning_rate)` with per-bin mean accuracy and sample count.
 
 ##### 2) Generate plots from CSV
