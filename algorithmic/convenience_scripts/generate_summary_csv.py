@@ -8,15 +8,65 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 
-LINE_RE = re.compile(
-    r"^(?P<model>\S+)\s+.*?"
-    r"eval_len0-50_acc:\s*(?P<acc_0_50>[0-9]*\.?[0-9]+)\s+"
-    r"eval_len51-100_acc:\s*(?P<acc_51_100>[0-9]*\.?[0-9]+)\s+"
-    r"eval_len101-150_acc:\s*(?P<acc_101_150>[0-9]*\.?[0-9]+)\s+"
-    r"lr:\s*(?P<lr>[0-9]*\.?[0-9]+(?:e-?[0-9]+)?)\s*$"
+# Extract the model name (first whitespace-delimited token on the line).
+_LINE_MODEL_RE = re.compile(r"^(\S+)")
+# Extract every eval bucket — captures (range, accuracy) pairs in order.
+# Bucket names are just the numeric range, e.g. "0-50", "51-100".
+_LINE_BUCKET_RE = re.compile(
+    r"eval_len([0-9]+-[0-9]+)_acc:\s*([0-9]*\.?[0-9]+)"
+)
+# Extract the learning rate.
+_LINE_LR_RE = re.compile(r"\blr:\s*([0-9]*\.?[0-9]+(?:e-?[0-9]+)?)")
+
+# Known SSM kernel identifiers.  Extend this set to add new kernels; they are
+# pre-extracted from the model string before the tokeniser runs so that the
+# [sa]+ layer-ordering rule can remain a simple (?:a|s)+ without any lookaheads.
+KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba"})
+
+# Kernel placeholders use \x01N\x01 (SOH byte as delimiter) so they cannot be
+# split by any letter or digit pattern in the tokeniser regex.
+_KERNEL_SLOT_RE = re.compile(r"\x01(\d+)\x01")
+
+# Tokenizer for model strings.  Order matters: more specific / longer patterns
+# must come before more general ones.
+#
+# Known kernels are pre-replaced with \x01N\x01 placeholders in tokenize_model
+# before this regex runs, so [sa]+ can simply be (?:a|s)+ — it stops naturally
+# at digits and the placeholder SOH byte acts as a hard boundary.
+_MODEL_TOKEN_RE = re.compile(
+    r"\x01\d+\x01"                              # kernel slot — restore in tokenize_model
+    r"|nope"                                    # NoPE flag — must precede "pe"
+    r"|noln"                                    # no-LayerNorm flag — must precede "ln"
+    r"|hyb"                                     # hybrid architecture
+    r"|ssm"                                     # SSM architecture
+    r"|lm(?![a-z])"                             # LM/transformer architecture
+    r"|mlp"                                     # MLP-layers descriptor
+    r"|stp"                                     # step-count prefix (stp{N}k)
+    r"|dr"                                      # dropout suffix (pure-alpha form)
+    r"|pe"                                      # positional-encoding flag
+    r"|ln"                                      # LayerNorm flag
+    r"|lr"                                      # learning-rate suffix (pure-alpha)
+    r"|(?:a|s)+"                                # layer-ordering: sa, as, sas, …
+    r"|[0-9]+(?:\.[0-9]+)?(?:mlp|dr|lr|[lhdk])"  # num+known-suffix: 1l, 4d, 0dr, 30k, 0.001lr
+    r"|[a-z]+[0-9]+(?:\.[0-9]+)?"               # alpha+num fallback
+    r"|[0-9]+(?:\.[0-9]+)?"                     # standalone number
+    r"|[a-z]+"                                   # remaining alpha fallback
 )
 
-BUCKETS = ("eval_len0-50", "eval_len51-100", "eval_len101-150")
+# Columns derived by parsing the model specification string.
+MODEL_SPEC_COLUMNS = [
+    "arch",          # lm | hyb | ssm
+    "layers",        # number of layers (l)
+    "heads",         # number of attention heads (h)
+    "d_model",       # embedding dimension (d)
+    "dropout",       # dropout rate (dr)
+    "mlp_size",      # MLP layer size multiplier (mlp)
+    "kernel",        # SSM kernel type (s4, s6, …); "-" for lm
+    "pe",            # positional encoding: True / False / -
+    "ln",            # layer norm: True / False / -
+    "train_steps_k", # training steps in thousands (stp…k)
+    "layer_order",   # hybrid layer ordering, e.g. sa, sas, as; "-" for lm/ssm
+]
 
 CSV_COLUMNS = [
     "task",
@@ -26,49 +76,119 @@ CSV_COLUMNS = [
     "learning_rate",
     "bucket",
     "accuracy",
-]
+] + MODEL_SPEC_COLUMNS
+
+
+def parse_model_spec(model: str) -> dict[str, str]:
+    """Parse a model specification string into structured feature columns.
+
+    Strategy: tokenise with *_MODEL_TOKEN_RE* (which handles all ordering
+    ambiguities, including ``sas4`` → ``sa`` + ``s4``), then assign each
+    token to the appropriate column.  Pure-alpha flags are detected first;
+    letter+number pairs are assigned to numeric columns afterwards.
+    Any unrecognised tokens are silently discarded.
+    """
+    # Guard against null-byte pollution that can appear in legacy CSV rows.
+    model_clean = model.strip().lstrip("\x00")
+    tokens = tokenize_model(model_clean)
+
+    pure_alpha: set[str] = set()
+    features: dict[str, str] = {}  # alpha-key → numeric-value (last wins)
+    for tok in tokens:
+        feat = feature_from_token(tok)
+        if feat is not None:
+            key, val = feat
+            features[key] = val
+        else:
+            pure_alpha.add(tok)
+
+    # ── Architecture ──────────────────────────────────────────────────────────
+    if "hyb" in pure_alpha:
+        arch = "hyb"
+    elif "ssm" in pure_alpha:
+        arch = "ssm"
+    else:
+        arch = "lm"
+
+    # ── SSM kernel ───────────────────────────────────────────────────────────
+    # Kernels are matched as whole tokens (KNOWN_KERNELS), so we just look for
+    # the first kernel token in the stream; default to "s4" if absent.
+    if arch in ("hyb", "ssm"):
+        kernel = next((tok for tok in tokens if tok in KNOWN_KERNELS), "s4")
+    else:
+        kernel = "-"
+
+    # ── Positional encoding ──────────────────────────────────────────────────
+    if "nope" in pure_alpha:
+        pe = "False"
+    elif "pe" in pure_alpha:
+        pe = "True"
+    else:
+        pe = "-"
+
+    # ── Layer norm ───────────────────────────────────────────────────────────
+    if "noln" in pure_alpha:
+        ln = "False"
+    elif "ln" in pure_alpha:
+        ln = "True"
+    else:
+        ln = "-"
+
+    # ── Training steps (thousands) ───────────────────────────────────────────
+    # Written as stp{N}k; tokeniser yields pure-alpha "stp" + feature ("k", N)
+    if "stp" in pure_alpha and "k" in features:
+        train_steps_k = features["k"]
+    else:
+        train_steps_k = "-"
+
+    # ── Hybrid layer ordering ([sa]+) ─────────────────────────────────────────
+    # We take the first token matching [sa]+ in the original token stream.
+    layer_order = "-"
+    if arch == "hyb":
+        for tok in tokens:
+            if re.fullmatch(r"[sa]+", tok):
+                layer_order = tok
+                break
+
+    return {
+        "arch": arch,
+        "layers": features.get("l", "-"),
+        "heads": features.get("h", "-"),
+        "d_model": features.get("d", "-"),
+        "dropout": features.get("dr", "-"),
+        "mlp_size": features.get("mlp", "-"),
+        "kernel": kernel,
+        "pe": pe,
+        "ln": ln,
+        "train_steps_k": train_steps_k,
+        "layer_order": layer_order,
+    }
 
 
 def parse_summary_line(line: str, task: str) -> list[dict[str, str | int | float]]:
-    m = LINE_RE.match(line.strip())
-    if m is None:
+    line = line.strip()
+    m_model = _LINE_MODEL_RE.match(line)
+    m_lr = _LINE_LR_RE.search(line)
+    buckets = _LINE_BUCKET_RE.findall(line)  # list of (range_str, acc_str)
+    if not m_model or not m_lr or not buckets:
         return []
 
-    model = m.group("model")
-    lr = float(m.group("lr"))
-    acc_0_50 = float(m.group("acc_0_50"))
-    acc_51_100 = float(m.group("acc_51_100"))
-    acc_101_150 = float(m.group("acc_101_150"))
+    model = m_model.group(1)
+    lr = float(m_lr.group(1))
+    spec = parse_model_spec(model)
 
-    return [
-        {
+    rows: list[dict[str, str | int | float]] = []
+    for range_str, acc_str in buckets:
+        row: dict[str, str | int | float] = {
             "task": task,
-            # "source_file": str(source_file),
-            # "source_line": source_line,
             "model": model,
             "learning_rate": lr,
-            "bucket": "eval_len0-50",
-            "accuracy": acc_0_50,
-        },
-        {
-            "task": task,
-            # "source_file": str(source_file),
-            # "source_line": source_line,
-            "model": model,
-            "learning_rate": lr,
-            "bucket": "eval_len51-100",
-            "accuracy": acc_51_100,
-        },
-        {
-            "task": task,
-            # "source_file": str(source_file),
-            # "source_line": source_line,
-            "model": model,
-            "learning_rate": lr,
-            "bucket": "eval_len101-150",
-            "accuracy": acc_101_150,
-        },
-    ]
+            "bucket": range_str,   # e.g. "0-50", "51-100"
+            "accuracy": float(acc_str),
+        }
+        row.update(spec)  # type: ignore[arg-type]
+        rows.append(row)
+    return rows
 
 
 def load_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -95,10 +215,9 @@ def build_or_update_csv(logs_root: Path, csv_path: Path) -> list[dict[str, str]]
     merged_rows: list[dict[str, str | int | float]] = []
 
     for row in existing_rows:
+        bucket = _normalize_bucket(row["bucket"])
         key = (
-            # row["source_file"],
-            # int(row["source_line"]),
-            row["bucket"],
+            bucket,
             row["model"],
             float(row["learning_rate"]),
             row["task"],
@@ -106,7 +225,13 @@ def build_or_update_csv(logs_root: Path, csv_path: Path) -> list[dict[str, str]]
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        merged_rows.append({col: row[col] for col in CSV_COLUMNS})
+        # Build a base row with defaults for any columns absent in older CSV
+        # files, then overwrite spec columns by re-parsing the model string so
+        # that spec columns are always up-to-date even when loading a legacy CSV.
+        base: dict[str, str | int | float] = {col: row.get(col, "-") for col in CSV_COLUMNS}
+        base["bucket"] = bucket
+        base.update(parse_model_spec(row["model"]))  # type: ignore[arg-type]
+        merged_rows.append(base)
 
     summary_files = sorted(logs_root.glob("**/summary*.txt"))
     for summary_file in summary_files:
@@ -146,61 +271,210 @@ def parse_include_rule(include_value: str) -> tuple[str, set[float] | None]:
     return include_value.strip(), None
 
 
+def feature_from_token(token: str) -> tuple[str, str] | None:
+    """Return ``(key, value)`` if *token* encodes a named numeric feature, else ``None``.
+
+    Both ``num+alpha`` tokens (e.g. ``"1l"`` → ``("l","1")``) and ``alpha+num``
+    tokens (e.g. ``"s4"`` → ``("s","4")``) are normalised to ``(alpha_key, num_val)``.
+    Pure-alpha tokens (``"nope"``, ``"hyb"``, …) return ``None``.
+    """
+    m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
+    if m:
+        return (m.group(2), m.group(1))
+    m = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", token)
+    if m:
+        return (m.group(1), m.group(2))
+    return None
+
+
+def tokenize_model(model: str) -> list[str]:
+    """Split a model string into its semantic tokens.
+
+    Known kernels (``KNOWN_KERNELS``) are pre-replaced with ``\\x01N\\x01``
+    placeholders so the ``(?:a|s)+`` layer-ordering rule never sees them and
+    can remain a simple greedy match without lookaheads.
+    """
+    s = model.strip().lstrip("\x00").lower()
+    # Pre-extract kernels longest-first to avoid partial matches.
+    slots: list[str] = []
+    for kernel in sorted(KNOWN_KERNELS, key=len, reverse=True):
+        i = 0
+        while (pos := s.find(kernel, i)) != -1:
+            placeholder = f"\x01{len(slots)}\x01"
+            slots.append(kernel)
+            s = s[:pos] + placeholder + s[pos + len(kernel):]
+            i = pos + len(placeholder)
+    raw = _MODEL_TOKEN_RE.findall(s)
+    # Restore placeholders to their original kernel strings.
+    return [
+        slots[int(m.group(1))] if (m := _KERNEL_SLOT_RE.fullmatch(tok)) else tok
+        for tok in raw
+    ]
+
+
+def _bucket_sort_key(bucket: str) -> int:
+    """Numeric sort key for bucket range strings like ``'0-50'``, ``'101-150'``."""
+    return int(bucket.split("-")[0]) if "-" in bucket else 0
+
+
+def _normalize_bucket(bucket: str) -> str:
+    """Strip legacy ``eval_len`` prefix from bucket names."""
+    return bucket[len("eval_len"):] if bucket.startswith("eval_len") else bucket
+
+
+def split_spec_pattern_tokens(pattern: str) -> list[str]:
+    """Split a CSV-row spec pattern into trimmed lowercase tokens (comma = AND)."""
+    return [p.strip().lower() for p in pattern.split(",") if p.strip()]
+
+
+def _token_matches_row(row: dict[str, str], token: str) -> bool:
+    """Return whether a single spec token matches structured *row* columns."""
+    t = token.strip().lower()
+    if not t:
+        return True
+
+    if t in KNOWN_KERNELS:
+        return row.get("kernel", "-") == t
+
+    if t in ("lm", "hyb", "ssm"):
+        return row.get("arch", "-") == t
+
+    if t == "nope":
+        return row.get("pe", "-") == "False"
+    if t == "noln":
+        return row.get("ln", "-") == "False"
+    if t == "pe":
+        return row.get("pe", "-") == "True"
+    if t == "ln":
+        return row.get("ln", "-") == "True"
+
+    if re.fullmatch(r"[sa]+", t):
+        return row.get("layer_order", "-") == t
+
+    if re.fullmatch(r"\d+-\d+", t):
+        return row.get("bucket", "") == t
+
+    if t == "stp":
+        return row.get("train_steps_k", "-") != "-"
+
+    if t == "mlp":
+        return row.get("mlp_size", "-") != "-"
+
+    if t == "dr":
+        return row.get("dropout", "-") != "-"
+
+    feat = feature_from_token(t)
+    if feat is not None:
+        key, val = feat
+        if key == "s":
+            return row.get("kernel", "-") == f"s{val}"
+        if key == "lr":
+            try:
+                return abs(float(row["learning_rate"]) - float(val)) < 1e-12
+            except (KeyError, ValueError, TypeError):
+                return False
+        col_map = {
+            "l": "layers",
+            "h": "heads",
+            "d": "d_model",
+            "dr": "dropout",
+            "mlp": "mlp_size",
+            "k": "train_steps_k",
+        }
+        col = col_map.get(key)
+        if not col:
+            return False
+        got = row.get(col, "-")
+        if got == val:
+            return True
+        if key == "dr":
+            try:
+                return abs(float(got) - float(val)) < 1e-9
+            except ValueError:
+                return False
+        return False
+
+    return False
+
+
+def row_matches_spec_pattern(row: dict[str, str], pattern: str) -> bool:
+    """Return whether *row* satisfies the spec *pattern*.
+
+    * Comma-separated clauses are **AND**-ed.  Each clause uses short notation
+      against structured CSV columns (``arch``, ``layers``, ``kernel``, …)::
+
+          1l,lm,nope   →  layers==1 AND arch==lm AND pe==False
+
+    * If there is **no** comma, try a single structured token first, then fall
+      back to :func:`matches_pattern` on the raw ``model`` string (legacy).
+    """
+    pattern_stripped = pattern.strip()
+    if not pattern_stripped:
+        return False
+    low = pattern_stripped.lower()
+    model = row.get("model", "")
+
+    if "," in pattern_stripped:
+        tokens = split_spec_pattern_tokens(pattern_stripped)
+        if not tokens:
+            return False
+        return all(_token_matches_row(row, tok) for tok in tokens)
+
+    if _token_matches_row(row, low):
+        return True
+    return matches_pattern(model, low)
+
+
+def _parse_model_tokens(model: str) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """Return ``(pure_alpha_flags, feature_pairs)`` for *model*."""
+    pure_alpha: set[str] = set()
+    features: set[tuple[str, str]] = set()
+    for tok in tokenize_model(model):
+        feat = feature_from_token(tok)
+        if feat is not None:
+            features.add(feat)
+        else:
+            pure_alpha.add(tok)
+    return frozenset(pure_alpha), frozenset(features)
+
+
 def extract_feature_tokens(value: str) -> list[tuple[str, str]]:
-    tokens = re.findall(
-        r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+[0-9]+(?:\.[0-9]+)?",
-        value.lower(),
-    )
-    features: list[tuple[str, str]] = []
-    for token in tokens:
-        m_alpha_num = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", token)
-        if m_alpha_num:
-            features.append((m_alpha_num.group(1), m_alpha_num.group(2)))
-            continue
-        m_num_alpha = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
-        if m_num_alpha:
-            features.append((m_num_alpha.group(2), m_num_alpha.group(1)))
-    return features
+    """Extract ``(key, value)`` feature pairs from a model/pattern string."""
+    return [f for tok in tokenize_model(value) if (f := feature_from_token(tok)) is not None]
 
 
 def matches_pattern(model: str, pattern: str) -> bool:
-    model_l = model.lower()
+    """Return ``True`` if *model* satisfies all constraints expressed in *pattern*.
+
+    Matching is **token-level**, not substring-level:
+
+    * Pure-alpha flag tokens (``nope``, ``pe``, ``noln``, ``ln``, ``hyb``, …) must
+      appear verbatim in the model's token set, **or** must match the alpha key of
+      a numeric feature (so ``"dr"`` matches ``"0dr"`` or ``"0.1dr"``).
+    * Numeric feature tokens (``"1l"``, ``"s4"``, ``"2mlp"``, ``"stp30k"`` parsed
+      as ``stp`` + ``30k``) must appear as exact feature pairs in the model.
+
+    This avoids the ``"pe"`` ⊆ ``"nope"`` false-positive of the old substring
+    approach while remaining order-insensitive across feature tokens.
+    """
     pattern_l = pattern.lower().strip()
     if not pattern_l:
         return False
 
-    # Parse pattern with the same non-overlapping chunk logic used for models.
-    # This handles cases like "ssm16d" as ["ssm", "16d"].
-    pattern_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", pattern_l)
-    if not pattern_chunks:
-        return pattern_l in model_l
+    model_alpha, model_features = _parse_model_tokens(model)
+    pattern_alpha, pattern_features = _parse_model_tokens(pattern_l)
 
-    # Each chunk must appear in the model. Otherwise patterns like "hyb256d" would
-    # only constrain ("d","256") via extract_feature_tokens (letters-only chunks
-    # are not features) and the old "leftovers" regex wrongly matched "hyb256" as
-    # [a-z]+[0-9]+, leaving "d" and matching almost every model.
-    for chunk in pattern_chunks:
-        if chunk not in model_l:
-            return False
-
-    pattern_features = extract_feature_tokens(" ".join(pattern_chunks))
-    # Model specs are concatenated chunks of {number?}{string}, e.g. ssm4l256d0.1dr.
-    # Parse chunks this way so "4l" is recognized in "ssm4l..." (non-overlapping).
-    model_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", model_l)
-    model_features = set(extract_feature_tokens(" ".join(model_chunks)))
+    # Every numeric feature in the pattern must be present in the model.
     for feat in pattern_features:
         if feat not in model_features:
             return False
 
-    # Characters not covered by chunk findall (e.g. "_" in "foo_8l") must still match.
-    remaining = pattern_l
-    for chunk in pattern_chunks:
-        pos = remaining.find(chunk)
-        if pos != -1:
-            remaining = remaining[:pos] + remaining[pos + len(chunk) :]
-    remaining = remaining.strip()
-    if remaining:
-        return remaining in model_l
+    # Every pure-alpha flag in the pattern must appear as a flag token OR as the
+    # alpha key of any model feature (e.g. pattern "dr" matches model token "0dr").
+    model_feature_keys = frozenset(key for key, _ in model_features)
+    for flag in pattern_alpha:
+        if flag not in model_alpha and flag not in model_feature_keys:
+            return False
 
     return True
 
@@ -218,23 +492,32 @@ def filter_rows(
     tasks: list[str],
     include_rules: list[tuple[str, set[float] | None]],
     include_patterns: list[str],
+    remove_patterns: list[str] | None = None,
 ) -> list[dict[str, str]]:
+    """Filter CSV *rows* by task, optional remove patterns, then optional includes.
+
+    * ``remove_patterns``: row is dropped if it matches **any** pattern (pre-filter).
+    * ``include_patterns``: if non-empty, row is kept only if it matches **any**
+      pattern **or** satisfies an ``--include`` exact model/lr rule.
+    * Within a single pattern string, comma-separated tokens are **AND**-ed
+      (see :func:`row_matches_spec_pattern`).
+    """
+    remove_patterns = [p for p in (remove_patterns or []) if p.strip()]
+
     if tasks:
         task_set = set(tasks)
         rows = [r for r in rows if r["task"] in task_set]
 
+    if remove_patterns:
+        rows = [
+            r
+            for r in rows
+            if not any(row_matches_spec_pattern(r, p) for p in remove_patterns)
+        ]
+
+    include_patterns = [p for p in include_patterns if p.strip()]
     if not include_rules and not include_patterns:
         return rows
-
-    expanded_patterns: list[str] = []
-    for pattern in include_patterns:
-        # Allow user input like "8l and 4l" or "8l,4l" as OR patterns.
-        parts = [
-            p.strip()
-            for p in re.split(r"(?:\s+and\s+)|[,\s]+", pattern.lower())
-            if p.strip()
-        ]
-        expanded_patterns.extend([p for p in parts if p != "and"])
 
     filtered: list[dict[str, str]] = []
     for row in rows:
@@ -249,7 +532,7 @@ def filter_rows(
                 matched_rule = True
                 break
 
-        matched_pattern = any(matches_pattern(model, p) for p in expanded_patterns)
+        matched_pattern = any(row_matches_spec_pattern(row, p) for p in include_patterns)
         if matched_rule or matched_pattern:
             filtered.append(row)
     return filtered
@@ -272,6 +555,8 @@ def print_models(rows: list[dict[str, str]]) -> None:
         print("No matching rows.")
         return
 
+    all_buckets = sorted({k[3] for k in grouped}, key=_bucket_sort_key)
+
     by_task: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for task, model, lr in series_keys:
         by_task[task].append((model, lr))
@@ -279,22 +564,12 @@ def print_models(rows: list[dict[str, str]]) -> None:
     for task in sorted(by_task.keys()):
         print(f"\nTask: {task}")
         for model, lr in sorted(by_task[task], key=lambda x: (x[0], x[1])):
-            means: list[str] = []
-            counts: list[str] = []
-            for bucket in BUCKETS:
+            parts: list[str] = []
+            for bucket in all_buckets:
                 vals = grouped.get((task, model, lr, bucket), [])
-                if vals:
-                    means.append(f"{mean(vals):.4f}")
-                    counts.append(str(len(vals)))
-                else:
-                    means.append("nan")
-                    counts.append("0")
-            print(
-                f"- {model} | lr={lr:g} | "
-                f"len0-50={means[0]} (n={counts[0]}) | "
-                f"len51-100={means[1]} (n={counts[1]}) | "
-                f"len101-150={means[2]} (n={counts[2]})"
-            )
+                acc = f"{mean(vals):.4f}" if vals else "nan"
+                parts.append(f"len{bucket}={acc} (n={len(vals)})")
+            print(f"- {model} | lr={lr:g} | " + " | ".join(parts))
 
 
 def _select_max_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -322,16 +597,20 @@ def _select_max_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         if not datapoints:
             continue
 
+        task_buckets = sorted(
+            {b for _, _, b in datapoint_bucket_vals}, key=_bucket_sort_key
+        )
+
         point_vec: dict[tuple[str, float], list[float]] = {}
         for dp in datapoints:
             vec: list[float] = []
-            for bucket in BUCKETS:
+            for bucket in task_buckets:
                 vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
                 vec.append(mean(vals) if vals else float("-inf"))
             point_vec[dp] = vec
 
         winner_points: set[tuple[str, float]] = set()
-        for bucket in BUCKETS:
+        for bucket in task_buckets:
             per_point_means: list[tuple[tuple[str, float], float]] = []
             for dp in datapoints:
                 vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
@@ -405,12 +684,24 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--remove-pattern",
+        action="append",
+        default=[],
+        help=(
+            "Pre-filter: drop rows that match any pattern.  Same short notation as "
+            "--include-pattern (comma = AND within one pattern).  Repeat flag for "
+            "multiple remove patterns (row removed if it matches any)."
+        ),
+    )
+    parser.add_argument(
         "--include-pattern",
         action="append",
         default=[],
         help=(
-            "Pattern-based OR filter over model strings. Feature matching is "
-            "order-insensitive (e.g., l1h1 and h1l1 are equivalent)."
+            "Keep rows that match any pattern (OR across repeated flags).  Each pattern "
+            "uses comma-separated short tokens AND-ed against CSV columns, e.g. "
+            "'1l,lm,nope' (layers=1, arch=lm, NoPE).  No comma: structured token "
+            "then legacy model-string matching."
         ),
     )
     parser.add_argument(
@@ -444,6 +735,7 @@ def main() -> int:
         tasks=tasks,
         include_rules=include_rules,
         include_patterns=args.include_pattern,
+        remove_patterns=args.remove_pattern,
     )
     if args.include_max_only:
         filtered_rows = _select_max_rows(filtered_rows)

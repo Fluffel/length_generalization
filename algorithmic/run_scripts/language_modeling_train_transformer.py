@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from language_modeling_train import main
-from utils import default_transformer_sweep
+from utils import ArchSlot, default_transformer_sweep
 
 
 if __name__ == "__main__":
@@ -25,7 +25,22 @@ if __name__ == "__main__":
     parser.add_argument("--key_size", type=int, default=32)
     parser.add_argument("--query_fraction", type=float, default=0.2)
     args = parser.parse_args()
+    archs = [
+        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=True, dropout=dr)
+        for l in [2, 4]
+        for h in [2, 4]
+        for d in [64, 256]
+        for dr in [0, 0.1]
+        for btwmlp in [1, 2]
+        for lr in [1e-3, 1e-4]
+    ]
+    
     rc = default_transformer_sweep()
+    rc.architectures = archs
+    rc.train_length_range = (0, 25)
+    rc.num_test_bins = 6
+
+
     rc.task = args.task
     rc.use_nope = args.nope
     rc.regularize = args.regularize

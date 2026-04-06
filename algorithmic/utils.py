@@ -36,7 +36,7 @@ class RunConfig:
     query_fraction: float = 0.2
 
     train_length_range: tuple[int, int] = (0, 50)
-    test_length_ranges: Optional[list[tuple[int, int]]] = None
+    num_test_bins: int = 3
     batch_size: int = 64
     test_num: int = 2000
 
@@ -73,19 +73,16 @@ class RunConfig:
     save_final_weights: bool = False
     print_example_sequences: int = 3
 
-    def resolved_test_length_ranges(self) -> list[tuple[int, int]]:
-        if self.test_length_ranges is not None:
-            return list(self.test_length_ranges)
+    @property
+    def test_length_ranges(self) -> list[tuple[int, int]]:
         tr = self.train_length_range
-        return [tr, (51, 100), (101, 150)]
-
-    # def resolved_hybrid_pattern(self) -> str:
-    #     pat = self.hybrid_layer_pattern.strip().lower()
-    #     if self.hybrid_start_with_attention is True:
-    #         return "as"
-    #     if self.hybrid_start_with_attention is False:
-    #         return "sa"
-    #     return pat
+        test_length_ranges = []
+        length_delta = tr[1] - tr[0]
+        for i in range(self.num_test_bins):
+            start = tr[0] + i * length_delta # 0, 50 -> 0, 50; 51, 
+            end = start + length_delta - 1
+            test_length_ranges.append((start, end))
+        return test_length_ranges
 
     def train_steps_k(self) -> float:
         """Largest step budget used for logging (actual steps depend on arch slot)."""

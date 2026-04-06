@@ -26,15 +26,18 @@ if __name__ == "__main__":
     parser.add_argument("--query_fraction", type=float, default=0.2)
     args = parser.parse_args()
     archs = [
-        ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=2)
-        for l in [1,2,4]
-        for d in [4, 16, 64]
+        ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp)
+        for l in [4, 8]
+        for d in [16, 64, 256]
         for dr in [0, 0.1]
-        for lr in [1e-3]
+        for btwmlp in [2, 4]
+        for lr in [1e-3, 1e-4]
     ]
     rc = default_ssm_sweep()
 
     rc.architectures = archs
+    rc.train_length_range = (0, 25)
+    rc.num_test_bins = 6
 
     rc.task = args.task
     rc.seeds = args.seeds

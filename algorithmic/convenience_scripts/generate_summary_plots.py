@@ -9,61 +9,12 @@ from pathlib import Path
 from statistics import mean
 
 from generate_summary_csv import (
-    BUCKETS,
+    feature_from_token,
     filter_rows,
     load_csv_rows,
-    parse_include_rule,
+    row_matches_spec_pattern,
+    tokenize_model,
 )
-
-
-def _extract_feature_tokens(value: str) -> list[tuple[str, str]]:
-    tokens = re.findall(
-        r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+[0-9]+(?:\.[0-9]+)?",
-        value.lower(),
-    )
-    features: list[tuple[str, str]] = []
-    for token in tokens:
-        m_alpha_num = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", token)
-        if m_alpha_num:
-            features.append((m_alpha_num.group(1), m_alpha_num.group(2)))
-            continue
-        m_num_alpha = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
-        if m_num_alpha:
-            features.append((m_num_alpha.group(2), m_num_alpha.group(1)))
-    return features
-
-
-def matches_pattern(model: str, pattern: str) -> bool:
-    model_l = model.lower()
-    pattern_l = pattern.lower().strip()
-    if not pattern_l:
-        return False
-
-    pattern_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", pattern_l)
-    if not pattern_chunks:
-        return pattern_l in model_l
-
-    for chunk in pattern_chunks:
-        if chunk not in model_l:
-            return False
-
-    pattern_features = _extract_feature_tokens(" ".join(pattern_chunks))
-    model_chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", model_l)
-    model_features = set(_extract_feature_tokens(" ".join(model_chunks)))
-    for feat in pattern_features:
-        if feat not in model_features:
-            return False
-
-    remaining = pattern_l
-    for chunk in pattern_chunks:
-        pos = remaining.find(chunk)
-        if pos != -1:
-            remaining = remaining[:pos] + remaining[pos + len(chunk) :]
-    remaining = remaining.strip()
-    if remaining:
-        return remaining in model_l
-
-    return True
 
 
 def _sample_std(values: list[float]) -> float:
@@ -75,52 +26,332 @@ def _sample_std(values: list[float]) -> float:
     return math.sqrt(var)
 
 
-def _group_label_for_model(model: str, group_patterns: list[str]) -> str | None:
+_BUCKET_BOUNDS_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+def _parse_bucket_bounds(bucket: str) -> tuple[int, int] | None:
+    """Return inclusive ``(start, end)`` for ``\"0-24\"``-style bucket names."""
+    m = _BUCKET_BOUNDS_RE.match(bucket.strip())
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    if a > b:
+        return None
+    return (a, b)
+
+
+def _bucket_end(bucket: str) -> int | None:
+    bounds = _parse_bucket_bounds(bucket)
+    return bounds[1] if bounds else None
+
+
+def _bucket_width(bucket: str) -> int | None:
+    """Inclusive span length (finer bins ⇒ smaller width)."""
+    bounds = _parse_bucket_bounds(bucket)
+    if not bounds:
+        return None
+    return bounds[1] - bounds[0] + 1
+
+
+def _bucket_sort_key_plot(bucket: str) -> tuple[int, str]:
+    e = _bucket_end(bucket)
+    return (e if e is not None else -1, bucket)
+
+
+def _buckets_for_datapoint(
+    dp: tuple[str, float], dcv: dict[tuple[str, float, str], list[float]]
+) -> list[str]:
+    m, lr = dp
+    return sorted(
+        {b for (m2, lr2, b) in dcv if m2 == m and lr2 == lr},
+        key=_bucket_sort_key_plot,
+    )
+
+
+def _mean_for_dp_bucket(
+    dp: tuple[str, float], bucket: str, dcv: dict[tuple[str, float, str], list[float]]
+) -> float | None:
+    vals = dcv.get((dp[0], dp[1], bucket), [])
+    return mean(vals) if vals else None
+
+
+def _finest_buckets_at_end_for_dp(
+    dp: tuple[str, float], end: int, dcv: dict[tuple[str, float, str], list[float]]
+) -> list[str]:
+    """Buckets for *dp* with this inclusive upper bound and minimal width."""
+    cands = [
+        b
+        for b in _buckets_for_datapoint(dp, dcv)
+        if _bucket_end(b) == end
+    ]
+    if not cands:
+        return []
+    w_min = min(w for b in cands if (w := _bucket_width(b)) is not None)
+    return [b for b in cands if _bucket_width(b) == w_min]
+
+
+def _value_at_end_for_dp(
+    dp: tuple[str, float], end: int, dcv: dict[tuple[str, float, str], list[float]]
+) -> float:
+    """Mean accuracy using the finest bucket(s) at *end*; max if ties."""
+    finest = _finest_buckets_at_end_for_dp(dp, end, dcv)
+    if not finest:
+        return float("-inf")
+    scores = [_mean_for_dp_bucket(dp, b, dcv) for b in finest]
+    scores = [s for s in scores if s is not None]
+    return max(scores) if scores else float("-inf")
+
+
+def select_max_winners_for_series(
+    datapoints: set[tuple[str, float]],
+    dcv: dict[tuple[str, float, str], list[float]],
+    *,
+    all_ends_override: list[int] | None = None,
+) -> tuple[set[tuple[str, float]], list[int]]:
+    """Pick non-dominated bin-end maxima, preferring finer (narrower) bins at each end.
+
+    1. For each bin upper bound *e*, keep only buckets with minimal width among
+       those ending at *e*, then take datapoints achieving the maximum mean
+       accuracy among those finest buckets.
+    2. Union winners across ends, then remove points Pareto-dominated on the
+       shared vector of values at every *e* (finest-bin value per dp at each *e*).
+
+    If *all_ends_override* is set (e.g. all bin ends on the plot), use it as the
+    comparison grid so maxima are comparable **across** series/groups on a
+    shared axis; otherwise *e* ranges only over ends seen in *datapoints*.
+    """
+    if all_ends_override is not None:
+        all_ends = sorted(set(all_ends_override))
+    else:
+        ends_set: set[int] = set()
+        for dp in datapoints:
+            for b in _buckets_for_datapoint(dp, dcv):
+                e = _bucket_end(b)
+                if e is not None:
+                    ends_set.add(e)
+        all_ends = sorted(ends_set)
+    if not all_ends:
+        return set(), []
+
+    winner_dps: set[tuple[str, float]] = set()
+    for e in all_ends:
+        pairs: list[tuple[tuple[str, float], str]] = []
+        for dp in datapoints:
+            for b in _buckets_for_datapoint(dp, dcv):
+                if _bucket_end(b) != e:
+                    continue
+                if not dcv.get((dp[0], dp[1], b)):
+                    continue
+                pairs.append((dp, b))
+        if not pairs:
+            continue
+        widths = [w for _, b in pairs if (w := _bucket_width(b)) is not None]
+        if not widths:
+            continue
+        w_min = min(widths)
+        fine = [(dp, b) for dp, b in pairs if _bucket_width(b) == w_min]
+        scored: list[tuple[tuple[str, float], str, float]] = []
+        for dp, b in fine:
+            m = _mean_for_dp_bucket(dp, b, dcv)
+            if m is not None:
+                scored.append((dp, b, m))
+        if not scored:
+            continue
+        best = max(t[2] for t in scored)
+        for dp, _, m in scored:
+            if m == best:
+                winner_dps.add(dp)
+
+    if not winner_dps:
+        return set(), all_ends
+
+    point_vec: dict[tuple[str, float], list[float]] = {}
+    for dp in winner_dps:
+        point_vec[dp] = [_value_at_end_for_dp(dp, e, dcv) for e in all_ends]
+
+    pruned: set[tuple[str, float]] = set()
+    for p in winner_dps:
+        pv = point_vec[p]
+        dominated = False
+        for q in winner_dps:
+            if q == p:
+                continue
+            qv = point_vec[q]
+            if all(qv[i] >= pv[i] for i in range(len(all_ends))) and any(
+                qv[i] > pv[i] for i in range(len(all_ends))
+            ):
+                dominated = True
+                break
+        if not dominated:
+            pruned.add(p)
+
+    return pruned, all_ends
+
+
+def _pool_raw_at_end_for_dps(
+    dps: set[tuple[str, float]],
+    end: int,
+    dcv: dict[tuple[str, float, str], list[float]],
+) -> list[float]:
+    """Concatenate raw accuracies at *end* using each dp's finest bucket there."""
+    chunk: list[float] = []
+    for dp in dps:
+        for b in _finest_buckets_at_end_for_dp(dp, end, dcv):
+            chunk.extend(dcv.get((dp[0], dp[1], b), []))
+    return chunk
+
+
+def max_line_xy_for_winners(
+    pruned: set[tuple[str, float]],
+    all_ends: list[int],
+    dcv: dict[tuple[str, float, str], list[float]],
+    *,
+    fallback_dps: set[tuple[str, float]] | None = None,
+) -> tuple[list[float], list[float], list[float]]:
+    """Build dotted max-line coordinates (x = bin end, y = %).
+
+    At each upper bound in *all_ends*, pool values from *pruned* winners (finest
+    bin).  If none of the pruned set has data at that end, fall back to pooling
+    from *fallback_dps* (typically all datapoints in the series) so the curve
+    spans every bin end that appears for that line — e.g. one model out to 149
+    and another only to 124 still each get their full extent on the max curve.
+    """
+    fallback = fallback_dps if fallback_dps is not None else set()
+    xs: list[float] = []
+    means: list[float] = []
+    stds: list[float] = []
+    for e in all_ends:
+        chunk = _pool_raw_at_end_for_dps(pruned, e, dcv)
+        if not chunk and fallback:
+            chunk = _pool_raw_at_end_for_dps(fallback, e, dcv)
+        if chunk:
+            xs.append(float(e))
+            means.append(mean(chunk) * 100.0)
+            stds.append(_sample_std(chunk) * 100.0)
+    return xs, means, stds
+
+
+_GROUP_BUCKET_TOKEN_RE = re.compile(r"^\d+-\d+$")
+
+
+def _group_pattern_for_membership(pattern: str) -> str:
+    """Strip ``N-M`` bin tokens so grouping is by model/config only.
+
+    Otherwise a pattern like ``hyb,0-100`` would only match rows whose CSV
+    ``bucket`` is ``0-100``, splitting long-bin rows into other groups and
+    capping a series at the wrong upper bound.
+    """
+    parts = [p.strip() for p in pattern.split(",") if p.strip()]
+    kept = [p for p in parts if not _GROUP_BUCKET_TOKEN_RE.fullmatch(p.lower())]
+    if not kept:
+        return pattern.strip().lower()
+    return ",".join(kept).lower()
+
+
+def _group_label_for_row(row: dict[str, str], group_patterns: list[str]) -> str | None:
     for pattern in group_patterns:
-        if matches_pattern(model, pattern):
+        if pattern == "*":
+            continue
+        if row_matches_spec_pattern(row, _group_pattern_for_membership(pattern)):
             return pattern
     return None
 
 
+# Matches pure layer-ordering tokens: sequences of only 's' and 'a' characters.
+# These tokens represent the order of SSM and Attention layers in a hybrid model
+# (e.g. "sa", "as", "sas") and must be handled as a single semantic group so
+# that different orderings are shown as "sa/as" rather than concatenated.
+_LAYERING_TOKEN_RE = re.compile(r"^[sa]+$")
+
+
 def _group_spec_from_models(models: set[str]) -> str:
+    """Build a compact human-readable label for a set of model strings.
+
+    Uses key-based aggregation rather than positional token comparison, so
+    models with different token counts or ordering (e.g. kernel before vs.
+    after the layer count) are handled correctly.  Layer-ordering tokens
+    (``sa``, ``as``, ``sas``, …) are grouped into a single slot and displayed
+    as ``sa/as`` when they differ across models.
+    """
     if not models:
         return ""
 
     model_list = sorted(models)
-    parsed_models: list[list[str]] = []
+
+    # Collect an ordered list of all unique "keys" seen across models.
+    # For numeric feature tokens: key = the alpha identifier (e.g. "l", "mlp", "s").
+    # For layer-ordering tokens:  key = the sentinel "__layering__".
+    # For other pure-alpha flags: key = the token itself (e.g. "hyb", "nope").
+    key_order: list[str] = []
+    seen_keys: set[str] = set()
+
+    # Per-model mapping from key → set of values.
+    # Pure-alpha flags: value is None (flag = present).
+    # Layer-ordering tokens: value is the token string itself.
+    # Numeric features: value is the numeric string.
+    per_model: list[dict[str, set]] = []
+
     for model in model_list:
-        # Preserve original spec order from CSV model strings.
-        # Chunks are either alpha-only (e.g. "ssm") or num+alpha (e.g. "4l", "0.1dr").
-        chunks = re.findall(r"[0-9]+(?:\.[0-9]+)?[a-z]+|[a-z]+", model.lower())
-        parsed_models.append(chunks)
+        kv: dict[str, set] = defaultdict(set)
+        for tok in tokenize_model(model):
+            if _LAYERING_TOKEN_RE.match(tok) and feature_from_token(tok) is None:
+                kv["__layering__"].add(tok)
+                if "__layering__" not in seen_keys:
+                    seen_keys.add("__layering__")
+                    key_order.append("__layering__")
+            else:
+                feat = feature_from_token(tok)
+                if feat is not None:
+                    key, val = feat
+                    kv[key].add(val)
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        key_order.append(key)
+                else:
+                    kv[tok].add(None)
+                    if tok not in seen_keys:
+                        seen_keys.add(tok)
+                        key_order.append(tok)
+        per_model.append(dict(kv))
 
-    max_len = max(len(chunks) for chunks in parsed_models)
     parts: list[str] = []
-    for i in range(max_len):
-        tokens_at_pos = [chunks[i] for chunks in parsed_models if i < len(chunks)]
-        if not tokens_at_pos:
-            continue
-        uniq_tokens = sorted(set(tokens_at_pos))
-        if len(uniq_tokens) == 1:
-            parts.append(uniq_tokens[0])
-            continue
+    for key in key_order:
+        all_vals: set = set()
+        for kv in per_model:
+            all_vals |= kv.get(key, set())
 
-        # If position varies only by numeric value of the same key, collapse as x/y<key>.
-        key_to_vals: dict[str, set[str]] = defaultdict(set)
-        valid_num_key = True
-        for token in uniq_tokens:
-            m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]+)", token)
-            if not m:
-                valid_num_key = False
-                break
-            key_to_vals[m.group(2)].add(m.group(1))
-        if valid_num_key and len(key_to_vals) == 1:
-            key = next(iter(key_to_vals.keys()))
-            vals = sorted(key_to_vals[key], key=lambda x: float(x))
-            parts.append(f"{'/'.join(vals)}{key}")
+        if key == "__layering__":
+            # Show all unique layer orderings with "/" separator.
+            unique = sorted(v for v in all_vals if v is not None)
+            parts.append("/".join(unique) if unique else "")
+        elif None in all_vals:
+            # Pure-alpha flag: show the flag once.
+            parts.append(key)
         else:
-            # Fallback for mixed tokens at same position.
-            parts.append("/".join(uniq_tokens))
+            # Numeric feature: show all values, collapsed by key.
+            str_vals = [v for v in all_vals if v is not None]
+            try:
+                sorted_vals = sorted(str_vals, key=float)
+            except (ValueError, TypeError):
+                sorted_vals = sorted(str_vals)
+
+            # Determine whether the original token is alpha+num ("s4") or
+            # num+alpha ("1l") by inspecting any model that has this key.
+            alpha_prefix = False
+            for model in model_list:
+                for tok in tokenize_model(model):
+                    f = feature_from_token(tok)
+                    if f and f[0] == key:
+                        alpha_prefix = bool(re.match(r"^[a-z]", tok))
+                        break
+                else:
+                    continue
+                break
+
+            if alpha_prefix:
+                parts.append(f"{key}{'/'.join(sorted_vals)}")
+            else:
+                parts.append(f"{'/'.join(sorted_vals)}{key}")
 
     return "".join(parts)
 
@@ -131,8 +362,8 @@ def plot_task(
     output_path: Path,
     title: str,
     legend_loc: str,
-    include_rules: list[tuple[str, set[float] | None]],
     include_patterns: list[str],
+    remove_patterns: list[str],
     group_patterns: list[str],
     include_max: bool,
     include_max_only: bool,
@@ -152,14 +383,15 @@ def plot_task(
     filtered_rows = filter_rows(
         rows,
         tasks=[task],
-        include_rules=include_rules,
+        include_rules=[],
         include_patterns=include_patterns,
+        remove_patterns=remove_patterns,
     )
     print(f"Filtered rows: {len(filtered_rows)}")
     if not filtered_rows:
         raise SystemExit(
             f"No rows to plot for task '{task}'. "
-            "Check --task and include filters/patterns."
+            "Check --task, --include-pattern, and --remove-pattern."
         )
 
     # Keep the raw datapoints per (model, lr, bucket) so include-max can select
@@ -185,7 +417,7 @@ def plot_task(
         grouped_datapoints: dict[str, set[tuple[str, float]]] = defaultdict(set)
         for row in filtered_rows:
             datapoint = (row["model"], float(row["learning_rate"]))
-            group_label = _group_label_for_model(row["model"], explicit_group_patterns)
+            group_label = _group_label_for_row(row, explicit_group_patterns)
             if group_label is None:
                 if wildcard_rest:
                     group_label = "*"
@@ -234,93 +466,73 @@ def plot_task(
             raise SystemExit("No model/lr series found after filtering.")
         series_to_bucket_vals = grouped
 
-    fig, ax = plt.subplots(figsize=(12, 7))
-    x_ticks = [10, 20, 30]
-    x_labels = ["Bin 1", "Bin 2", "Bin 3"]
-    bucket_to_x = dict(zip(BUCKETS, x_ticks))
+    all_bucket_names = {r["bucket"] for r in filtered_rows}
+    x_tick_ends = sorted(
+        {e for b in all_bucket_names if (e := _bucket_end(b)) is not None}
+    )
+    if not x_tick_ends:
+        raise SystemExit(
+            "No parseable bucket ranges in filtered rows (expected names like '0-50')."
+        )
 
-    # Optional derived max-series per line:
-    # For each plotted line, select datapoints that achieve the maximum mean in any bin.
-    # Build max{...} from the union of those winners and plot dotted in the same color.
-    max_series: dict[str, tuple[str, list[float], list[float]]] = {}
+    def series_buckets(series_label: str) -> list[str]:
+        return sorted(
+            {b for (sl, b) in series_to_bucket_vals if sl == series_label},
+            key=_bucket_sort_key_plot,
+        )
+
+    # One dotted max line per **series** (each group-pattern / each unmatched model|lr),
+    # finest-bin + Pareto within that series, on the **shared** grid ``x_tick_ends`` so
+    # all lines align on the same bin upper bounds (with per-series fallback for extent).
+    max_series: dict[str, tuple[str, list[float], list[float], list[float]]] = {}
     if include_max or include_max_only:
         for series_label in series_labels:
             datapoints = series_to_datapoints.get(series_label, set())
             if not datapoints:
                 continue
-
-            point_vec: dict[tuple[str, float], list[float]] = {}
-            for dp in datapoints:
-                vec: list[float] = []
-                for bucket in BUCKETS:
-                    vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
-                    vec.append(mean(vals) if vals else float("-inf"))
-                point_vec[dp] = vec
-
-            winner_points: set[tuple[str, float]] = set()
-            for bucket in BUCKETS:
-                per_point_means: list[tuple[tuple[str, float], float]] = []
-                for dp in datapoints:
-                    vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
-                    if vals:
-                        per_point_means.append((dp, mean(vals)))
-                if not per_point_means:
-                    continue
-                max_mean = max(v for _, v in per_point_means)
-                for dp, v in per_point_means:
-                    if v == max_mean:
-                        winner_points.add(dp)
-            if not winner_points:
+            pruned, _ = select_max_winners_for_series(
+                datapoints,
+                datapoint_bucket_vals,
+                all_ends_override=x_tick_ends,
+            )
+            if not pruned:
                 continue
-
-            # Exclude winners that are dominated by another datapoint in all bins.
-            # A point p is dominated if another point q has q_i >= p_i for every bin
-            # and q_j > p_j for at least one bin.
-            pruned_winners: set[tuple[str, float]] = set()
-            for p in winner_points:
-                p_vec = point_vec[p]
-                dominated = False
-                for q in datapoints:
-                    if q == p:
-                        continue
-                    q_vec = point_vec[q]
-                    if all(qv >= pv for qv, pv in zip(q_vec, p_vec)) and any(
-                        qv > pv for qv, pv in zip(q_vec, p_vec)
-                    ):
-                        dominated = True
-                        break
-                if not dominated:
-                    pruned_winners.add(p)
-            winner_points = pruned_winners
-            if not winner_points:
-                continue
-
-            winner_models = {m for m, _ in winner_points}
+            winner_models = {m for m, _ in pruned}
             max_suffix = _group_spec_from_models(winner_models) or series_label
             max_label = f"max:{max_suffix}"
-            max_means: list[float] = []
-            max_stds: list[float] = []
-            for bucket in BUCKETS:
-                vals: list[float] = []
-                for dp in winner_points:
-                    vals.extend(datapoint_bucket_vals.get((dp[0], dp[1], bucket), []))
-                if vals:
-                    max_means.append(mean(vals) * 100.0)
-                    max_stds.append(_sample_std(vals) * 100.0)
-                else:
-                    max_means.append(float("nan"))
-                    max_stds.append(float("nan"))
-            max_series[series_label] = (max_label, max_means, max_stds)
+            mx, mmean, mstd = max_line_xy_for_winners(
+                pruned,
+                x_tick_ends,
+                datapoint_bucket_vals,
+                fallback_dps=datapoints,
+            )
+            max_series[series_label] = (max_label, mx, mmean, mstd)
+
+    # Axis extent: every bin end in the CSV, plus any series / max-line point (defensive).
+    x_max_data = float(max(x_tick_ends))
+    for sl in series_labels:
+        for b in series_buckets(sl):
+            if (e := _bucket_end(b)) is not None:
+                x_max_data = max(x_max_data, float(e))
+    for _lbl, mx_pts, _, _ in max_series.values():
+        if mx_pts:
+            x_max_data = max(x_max_data, max(mx_pts))
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    x_ticks = [float(e) for e in x_tick_ends]
+    x_labels = [f"<{e}" for e in x_tick_ends]
 
     stem_colors: dict[str, str] = {}
     for series_label in series_labels:
-        xs = [bucket_to_x[b] for b in BUCKETS]
-
+        buckets_sl = series_buckets(series_label)
+        xs_stem = [float(_bucket_end(b)) for b in buckets_sl if _bucket_end(b) is not None]
         if not include_max_only:
             means: list[float] = []
             stds: list[float] = []
-            for bucket in BUCKETS:
-                vals = series_to_bucket_vals.get((series_label, bucket), [])
+            for b in buckets_sl:
+                if _bucket_end(b) is None:
+                    continue
+                vals = series_to_bucket_vals.get((series_label, b), [])
                 if vals:
                     means.append(mean(vals) * 100.0)
                     stds.append(_sample_std(vals) * 100.0)
@@ -329,7 +541,7 @@ def plot_task(
                     stds.append(float("nan"))
 
             stem_line = ax.errorbar(
-                xs,
+                xs_stem,
                 means,
                 yerr=stds,
                 marker="o",
@@ -341,28 +553,36 @@ def plot_task(
             )
             stem_colors[series_label] = stem_line.lines[0].get_color()
 
-        if series_label in max_series:
-            max_label, max_means, max_stds = max_series[series_label]
-            dotted_color = stem_colors.get(series_label, None)
-            ax.errorbar(
-                xs,
-                max_means,
-                yerr=max_stds,
-                marker="o",
-                linestyle="dotted",
-                linewidth=2.0,
-                capsize=5,
-                elinewidth=1.5,
-                color=dotted_color,
-                label=max_label,
-            )
+    for series_label in series_labels:
+        if series_label not in max_series:
+            continue
+        max_label, mx, max_means, max_stds = max_series[series_label]
+        dotted_color = stem_colors.get(series_label)
+        if dotted_color is None and include_max_only:
+            ln = ax.plot([], [], linestyle="solid")[0]
+            dotted_color = ln.get_color()
+            ln.remove()
+        ax.errorbar(
+            mx,
+            max_means,
+            yerr=max_stds,
+            marker="o",
+            linestyle="dotted",
+            linewidth=2.0,
+            capsize=5,
+            elinewidth=1.5,
+            color=dotted_color,
+            label=max_label,
+        )
 
     ax.set_title(title)
-    ax.set_xlabel("Validation bins")
+    ax.set_xlabel("Validation length (upper bound)")
     ax.set_ylabel("Accuracy (%)")
     ax.set_xticks(x_ticks)
     ax.set_xticklabels(x_labels)
     ax.set_ylim(-10.0, 110.0)
+    pad = max(x_max_data * 0.02, 1.0)
+    ax.set_xlim(0.0, x_max_data + pad)
     ax.grid(alpha=0.3)
     if legend_loc != "none":
         ax.legend(loc=legend_loc, fontsize=10, frameon=False)
@@ -376,8 +596,8 @@ def plot_task(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Create per-task plots from the unified CSV with optional model/lr "
-            "filtering and feature-based grouping."
+            "Create per-task plots from the unified CSV with optional "
+            "--include-pattern / --remove-pattern filtering and grouping."
         )
     )
     repo_root = Path(__file__).resolve().parents[2]
@@ -397,11 +617,6 @@ def main() -> int:
         type=str,
         help="Task directory name (e.g., lm-out-new-sort). Required for plotting.",
     )
-    # parser.add_argument(
-    #     "--plot",
-    #     action="store_true",
-    #     help="If set, generate a plot for --task.",
-    # )
     parser.add_argument(
         "--output",
         "--plot-path",
@@ -440,12 +655,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--include",
+        "--remove-pattern",
         action="append",
         default=[],
         help=(
-            "Filter entries for plotting. Format: model or model:lr1,lr2 "
-            "(repeat flag for multiple models). Example: --include 1l1h64d:0.001,0.0001"
+            "Pre-filter: drop rows matching any pattern before plotting.  Same notation "
+            "as --include-pattern (comma = AND within a pattern)."
         ),
     )
     parser.add_argument(
@@ -453,9 +668,9 @@ def main() -> int:
         action="append",
         default=[],
         help=(
-            "Pattern-based OR filter over model strings. Supports feature matching "
-            "(order-insensitive), e.g. --include-pattern l1h1 or --include-pattern h1l1. "
-            "You can repeat the flag and values are combined with OR."
+            "Keep rows matching any pattern (OR across flags).  Comma-separated tokens "
+            "are AND-ed against CSV columns, e.g. 'hyb,1l,s4'.  No comma: structured "
+            "token then legacy model-string match."
         ),
     )
     parser.add_argument(
@@ -463,11 +678,10 @@ def main() -> int:
         action="append",
         default=[],
         help=(
-            "Aggregate matching models into one series per pattern. Unmatched models stay "
-            "as individual series unless '*' is provided. Use --group-pattern \\* to group "
-            "the remaining unmatched models into one final group (escape * in shell). "
-            "Repeat for multiple groups. Example: --group-pattern ssm --group-pattern l1h1 "
-            "--group-pattern \\*"
+            "Aggregate rows matching each pattern into one series (same CSV short notation "
+            "as --include-pattern).  Bin-range tokens like 0-50 are **ignored** for matching "
+            "so every eval bucket for the same model still belongs to the same group.  "
+            "Use '*' for the rest.  Example: --group-pattern ssm --group-pattern hyb,1l --group-pattern \\*"
         ),
     )
     max_group = parser.add_mutually_exclusive_group()
@@ -475,15 +689,16 @@ def main() -> int:
         "--include-max",
         action="store_true",
         help=(
-            "For each plotted line, add a dotted max:... line from datapoints that "
-            "are bin-wise maxima within that line."
+            "Per plotted series, add a dotted max:... line (same color as the solid line): "
+            "shared bin-end grid across the figure, finest bin at each end, Pareto prune "
+            "within that series."
         ),
     )
     max_group.add_argument(
         "--include-max-only",
         action="store_true",
         help=(
-            "Plot only dotted max:... lines (omit the original stem lines). "
+            "Plot only dotted max:... lines (one per series, omit solid lines). "
             "Mutually exclusive with --include-max."
         ),
     )
@@ -501,7 +716,6 @@ def main() -> int:
             "Generate it first with generate_summary_csv.py."
         )
 
-    include_rules = [parse_include_rule(v) for v in args.include]
     plot_path = args.output_path or (default_plot_dir / f"{args.task}.png")
     title = args.title or args.task
     plot_task(
@@ -510,8 +724,8 @@ def main() -> int:
         output_path=plot_path,
         title=title,
         legend_loc=args.legend_loc,
-        include_rules=include_rules,
         include_patterns=args.include_pattern,
+        remove_patterns=args.remove_pattern,
         group_patterns=args.group_pattern,
         include_max=args.include_max,
         include_max_only=args.include_max_only,

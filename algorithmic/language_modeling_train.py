@@ -220,7 +220,7 @@ class customCollator:
 
 def build_datasets(run_config: RunConfig):
     train_length_range = run_config.train_length_range
-    test_length_ranges = run_config.resolved_test_length_ranges()
+    test_length_ranges = run_config.test_length_ranges
     max_test_length = test_length_ranges[-1][1]
     test_num = run_config.test_num
     task = run_config.task
@@ -367,13 +367,6 @@ def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: i
             raise ValueError(run_config.model_family)
 
 
-# def hybrid_weights_stem(run_config: RunConfig, arch: ArchSlot) -> str:
-#     pat = run_config.hybrid_layer_pattern
-#     small = "smalllr" if arch.lr == 1e-4 else ""
-#     dr = arch.dropout
-#     return f"hyb{pat}_{arch.n_layer}l{arch.n_head}h{arch.d_model}d{dr}dr{small}"
-
-
 def main(run_config: RunConfig) -> None:
     global train_length_range, test_length_ranges
 
@@ -399,6 +392,8 @@ def main(run_config: RunConfig) -> None:
         random.seed(seed)
 
         with open(summary_path, "a") as summary_file:
+
+            # Sanity check: print example sequences from first test length range
             first_range = test_length_ranges[0]
             key0 = f"len{first_range[0]}-{first_range[1]}"
             for i in range(run_config.print_example_sequences):
@@ -414,12 +409,6 @@ def main(run_config: RunConfig) -> None:
                 if max_steps == run_config.max_steps_large and stop_state["fit_train_data"]:
                     break
 
-                # if run_config.model_family == "transformer":
-                #     output_tag = f"lm{arch.n_layer}l{arch.n_head}h{arch.d_model}d{'smalllr' if arch.lr == 1e-4 else ''}"
-                # elif run_config.model_family == "ssm":
-                #     output_tag = f"ssm{arch.n_layer}l{arch.d_model}d{arch.dropout}dr{'smalllr' if arch.lr == 1e-4 else ''}"
-                # else:
-                #     output_tag = hybrid_weights_stem(run_config, arch)
                 output_tag = format_log_prefix(run_config, arch, max_steps)
 
                 model = build_model(run_config, arch, tokenizer, n_positions)
