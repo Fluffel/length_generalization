@@ -49,6 +49,7 @@ _MODEL_TOKEN_RE = re.compile(
     r"|(?:a|s)+"                                # layer-ordering: sa, as, sas, …
     r"|[0-9]+(?:\.[0-9]+)?(?:mlp|dr|lr|[lhdk])"  # num+known-suffix: 1l, 4d, 0dr, 30k, 0.001lr
     r"|[a-z]+[0-9]+(?:\.[0-9]+)?"               # alpha+num fallback
+    r"|[0-9]+(?:\.[0-9]+)?reg"                   # e.g. 0.0reg — prefix before l/h/d sweep
     r"|[0-9]+(?:\.[0-9]+)?"                     # standalone number
     r"|[a-z]+"                                   # remaining alpha fallback
 )
@@ -208,7 +209,12 @@ def write_csv_rows(csv_path: Path, rows: list[dict[str, str | int | float]]) -> 
             writer.writerow(row)
 
 
-def build_or_update_csv(logs_root: Path, csv_path: Path) -> list[dict[str, str]]:
+def build_or_update_csv(
+    logs_root: Path,
+    csv_path: Path,
+    *,
+    bucket_end_digits: frozenset[int] | None = None,
+) -> list[dict[str, str]]:
     existing_rows = load_csv_rows(csv_path)
 
     seen_keys = set()
@@ -254,6 +260,11 @@ def build_or_update_csv(logs_root: Path, csv_path: Path) -> list[dict[str, str]]
                         continue
                     seen_keys.add(key)
                     merged_rows.append(row)
+
+    if bucket_end_digits:
+        merged_rows = [
+            r for r in merged_rows if row_matches_bucket_end_digit(r, bucket_end_digits)
+        ]
 
     write_csv_rows(csv_path, merged_rows)
     return load_csv_rows(csv_path)
@@ -322,6 +333,32 @@ def _normalize_bucket(bucket: str) -> str:
     return bucket[len("eval_len"):] if bucket.startswith("eval_len") else bucket
 
 
+_BUCKET_RANGE_INCLUSIVE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+def bucket_range_upper_bound(bucket: str) -> int | None:
+    """Inclusive upper bound of ``lo-hi`` bucket names (second integer), or ``None``."""
+    b = _normalize_bucket(bucket.strip())
+    m = _BUCKET_RANGE_INCLUSIVE_RE.match(b)
+    if not m:
+        return None
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if lo > hi:
+        return None
+    return hi
+
+
+def row_matches_bucket_end_digit(
+    row: dict[str, str | int | float],
+    allowed: frozenset[int],
+) -> bool:
+    """``True`` if the bucket's upper bound's ones digit is in *allowed*."""
+    ub = bucket_range_upper_bound(str(row.get("bucket", "")))
+    if ub is None:
+        return False
+    return (ub % 10) in allowed
+
+
 def split_spec_pattern_tokens(pattern: str) -> list[str]:
     """Split a CSV-row spec pattern into trimmed lowercase tokens (comma = AND)."""
     return [p.strip().lower() for p in pattern.split(",") if p.strip()]
@@ -387,6 +424,11 @@ def _token_matches_row(row: dict[str, str], token: str) -> bool:
         got = row.get(col, "-")
         if got == val:
             return True
+        if col in ("layers", "heads", "d_model", "mlp_size", "train_steps_k"):
+            try:
+                return abs(float(got) - float(val)) < 1e-9
+            except ValueError:
+                return False
         if key == "dr":
             try:
                 return abs(float(got) - float(val)) < 1e-9
@@ -397,6 +439,20 @@ def _token_matches_row(row: dict[str, str], token: str) -> bool:
     return False
 
 
+def resolve_row_spec(row: dict[str, str]) -> dict[str, str]:
+    """Copy *row* with ``MODEL_SPEC_COLUMNS`` taken from :func:`parse_model_spec`.
+
+    CSV spec cells can be stale; pattern matching against architecture tokens
+    (``lm``, ``1mlp``, …) should agree with how the model string tokenises.
+    ``task``, ``bucket``, ``model``, ``learning_rate``, ``accuracy`` stay as in *row*.
+    """
+    out = dict(row)
+    spec = parse_model_spec(row.get("model", ""))
+    for col in MODEL_SPEC_COLUMNS:
+        out[col] = spec[col]
+    return out
+
+
 def row_matches_spec_pattern(row: dict[str, str], pattern: str) -> bool:
     """Return whether *row* satisfies the spec *pattern*.
 
@@ -405,22 +461,24 @@ def row_matches_spec_pattern(row: dict[str, str], pattern: str) -> bool:
 
           1l,lm,nope   →  layers==1 AND arch==lm AND pe==False
 
-    * If there is **no** comma, try a single structured token first, then fall
-      back to :func:`matches_pattern` on the raw ``model`` string (legacy).
+    * If there is **no** comma, try a single structured token first (against
+      :func:`resolve_row_spec` columns), then fall back to :func:`matches_pattern`
+      on the raw ``model`` string (legacy / odd encodings).
     """
     pattern_stripped = pattern.strip()
     if not pattern_stripped:
         return False
     low = pattern_stripped.lower()
     model = row.get("model", "")
+    row_eff = resolve_row_spec(row)
 
     if "," in pattern_stripped:
         tokens = split_spec_pattern_tokens(pattern_stripped)
         if not tokens:
             return False
-        return all(_token_matches_row(row, tok) for tok in tokens)
+        return all(_token_matches_row(row_eff, tok) for tok in tokens)
 
-    if _token_matches_row(row, low):
+    if _token_matches_row(row_eff, low):
         return True
     return matches_pattern(model, low)
 
@@ -650,6 +708,13 @@ def _select_max_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
+def _parse_cli_bucket_end_digit(s: str) -> int:
+    v = int(s.strip())
+    if v < 0 or v > 9:
+        raise argparse.ArgumentTypeError(f"bucket end digit must be 0–9, got {v!r}")
+    return v
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -717,10 +782,28 @@ def main() -> int:
             "per task across bins (with dominated models removed)."
         ),
     )
+    parser.add_argument(
+        "--bucket-end-digit",
+        action="append",
+        dest="bucket_end_digits",
+        type=_parse_cli_bucket_end_digit,
+        default=None,
+        help=(
+            "With --create: keep only rows whose bucket upper bound ends in this decimal digit "
+            "(ones place), e.g. 0 keeps 0-50 (50) and 51-100 (100); 9 keeps 25-49 (49). "
+            "Repeat flag for multiple digits (OR). Omit to keep all buckets."
+        ),
+    )
     args = parser.parse_args()
 
+    be_digits = frozenset(args.bucket_end_digits) if args.bucket_end_digits else None
+
     if args.create:
-        rows = build_or_update_csv(logs_root=args.logs_root, csv_path=args.csv)
+        rows = build_or_update_csv(
+            logs_root=args.logs_root,
+            csv_path=args.csv,
+            bucket_end_digits=be_digits,
+        )
         print(f"Wrote/updated CSV: {args.csv} ({len(rows)} rows)")
         return 0
 
