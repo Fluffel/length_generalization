@@ -1,0 +1,423 @@
+Max-only model results by task
+CSV: exports/summary_results_9bins.csv
+
+============================================================
+TASK: addition
+============================================================
+
+--- MODEL: ssm ---
+
+Task: addition
+- ssms48l256d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0470 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+--- MODEL: hyb ---
+
+Task: addition
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=0.9965 (n=1) | len50-99=0.9740 (n=1) | len100-149=0.8385 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=0.5720 (n=1) | len100-149=0.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: addition
+- lm0.0reg4l4h256d2mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.1640 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+============================================================
+TASK: bin_majority
+============================================================
+
+--- MODEL: ssm ---
+
+Task: bin_majority
+- ssms48l256d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.9965 (n=1) | len75-99=0.9885 (n=1) | len125-149=0.9860 (n=1)
+- ssms48l64d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.9945 (n=1) | len75-99=0.9895 (n=1) | len125-149=0.9835 (n=1)
+
+--- MODEL: hyb ---
+
+Task: bin_majority
+- hybsas41l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h4d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+
+--- MODEL: lm ---
+No matching rows.
+
+============================================================
+TASK: bin_majority_interleave
+============================================================
+
+--- MODEL: ssm ---
+
+Task: bin_majority_interleave
+- ssms44l64d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.8915 (n=1) | len75-99=0.7830 (n=1) | len125-149=0.7345 (n=1)
+- ssms44l64d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.8175 (n=1) | len75-99=0.6905 (n=1) | len125-149=0.7950 (n=1)
+- ssms48l16d0.1dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.9280 (n=1) | len75-99=0.6420 (n=1) | len125-149=0.4865 (n=1)
+
+--- MODEL: hyb ---
+
+Task: bin_majority_interleave
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: bin_majority_interleave
+- lm0.0reg2l2h256d2mlppelnstp30k0.0001lr | lr=0.0001 | len25-49=0.9875 (n=1) | len75-99=0.6705 (n=1) | len125-149=0.3630 (n=1)
+- lm0.0reg2l4h256d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.9815 (n=1) | len75-99=0.8575 (n=1) | len125-149=0.8865 (n=1)
+- lm0.0reg4l2h256d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.9850 (n=1) | len75-99=0.8930 (n=1) | len125-149=0.8135 (n=1)
+
+============================================================
+TASK: majority
+============================================================
+
+--- MODEL: ssm ---
+
+Task: majority
+- ssms44l256d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.8510 (n=1) | len75-99=0.4965 (n=1) | len125-149=0.3745 (n=1)
+- ssms48l64d0.1dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.9175 (n=1) | len75-99=0.4840 (n=1) | len125-149=0.3380 (n=1)
+
+--- MODEL: hyb ---
+
+Task: majority
+- hybsas41l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: majority
+- lm0.0reg4l2h256d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=1.0000 (n=1) | len75-99=0.9925 (n=1) | len125-149=0.9485 (n=1)
+
+============================================================
+TASK: mqar
+============================================================
+
+--- MODEL: ssm ---
+
+Task: mqar
+- ssms44l16d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.4865 (n=1) | len75-99=0.4505 (n=1) | len125-149=0.5225 (n=1)
+- ssms48l16d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.4840 (n=1) | len75-99=0.5230 (n=1) | len125-149=0.4860 (n=1)
+- ssms48l64d0.1dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.5235 (n=1) | len75-99=0.5110 (n=1) | len125-149=0.5110 (n=1)
+
+--- MODEL: hyb ---
+
+Task: mqar
+- hybsas41l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h4d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h4d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h4d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h4d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: mqar
+- lm0.0reg2l2h64d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.5240 (n=1) | len75-99=0.4975 (n=1) | len125-149=0.4890 (n=1)
+- lm0.0reg2l2h64d2mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.5045 (n=1) | len75-99=0.5235 (n=1) | len125-149=0.4935 (n=1)
+- lm0.0reg4l2h64d2mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.5080 (n=1) | len75-99=0.5010 (n=1) | len125-149=0.5150 (n=1)
+
+============================================================
+TASK: parity
+============================================================
+
+--- MODEL: ssm ---
+
+Task: parity
+- ssms42l64d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len0-19=0.9995 (n=1) | len20-39=0.6890 (n=1) | len25-49=nan (n=0) | len40-59=0.5125 (n=1) | len75-99=nan (n=0) | len125-149=nan (n=0)
+- ssms42l64d0dr2mlplnstp30k0.001lr | lr=0.001 | len0-19=1.0000 (n=1) | len20-39=0.6235 (n=1) | len25-49=nan (n=0) | len40-59=0.5330 (n=1) | len75-99=nan (n=0) | len125-149=nan (n=0)
+- ssms44l256d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len0-19=nan (n=0) | len20-39=nan (n=0) | len25-49=0.6860 (n=1) | len40-59=nan (n=0) | len75-99=0.5315 (n=1) | len125-149=0.4780 (n=1)
+- ssms44l64d0dr2mlplnstp30k0.001lr | lr=0.001 | len0-19=1.0000 (n=1) | len20-39=0.6370 (n=1) | len25-49=0.5575 (n=1) | len40-59=0.5165 (n=1) | len75-99=0.5050 (n=1) | len125-149=0.4795 (n=1)
+- ssms48l16d0.1dr4mlplnstp60k0.001lr | lr=0.001 | len0-19=nan (n=0) | len20-39=nan (n=0) | len25-49=0.5365 (n=1) | len40-59=nan (n=0) | len75-99=0.4865 (n=1) | len125-149=0.5265 (n=1)
+- ssms48l16d0dr2mlplnstp60k0.001lr | lr=0.001 | len0-19=nan (n=0) | len20-39=nan (n=0) | len25-49=0.7705 (n=1) | len40-59=nan (n=0) | len75-99=0.3610 (n=1) | len125-149=0.1980 (n=1)
+
+--- MODEL: hyb ---
+
+Task: parity
+- hybsas41l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l1h4d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l2h4d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr1mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr2mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h4d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas41l4h4d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr1mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h4d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l1h4d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr1mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr2mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l2h4d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr1mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr2mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0dr1mlppenolnstp30k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h16d0dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas42l4h4d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l1h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l2h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr1mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr2mlppenolnstp60k0.0001lr | lr=0.0001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0.1dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+- hybsas44l4h4d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=1.0000 (n=1) | len100-149=1.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: parity
+- lm0.0reg2l4h64d2mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.8830 (n=1) | len75-99=0.6390 (n=1) | len125-149=0.5835 (n=1)
+
+============================================================
+TASK: repeat_copy
+============================================================
+
+--- MODEL: ssm ---
+
+Task: repeat_copy
+- ssms44l256d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0.1dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l256d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0420 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+--- MODEL: hyb ---
+
+Task: repeat_copy
+- hybsas42l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=0.9755 (n=1) | len50-99=0.8570 (n=1) | len100-149=0.9130 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=0.8935 (n=1) | len100-149=0.3045 (n=1)
+
+--- MODEL: lm ---
+
+Task: repeat_copy
+- lm0.0reg4l4h256d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.5220 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+============================================================
+TASK: sort
+============================================================
+
+--- MODEL: ssm ---
+
+Task: sort
+- ssms48l256d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0880 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+--- MODEL: hyb ---
+
+Task: sort
+- hybsas41l1h16d0.1dr2mlppenolnstp30k0.001lr | lr=0.001 | len0-49=0.4180 (n=1) | len50-99=0.8830 (n=1) | len100-149=0.0000 (n=1)
+- hybsas44l1h16d0.1dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=0.9670 (n=1) | len50-99=0.8200 (n=1) | len100-149=0.0550 (n=1)
+- hybsas44l1h16d0dr2mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=0.0025 (n=1) | len100-149=0.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: sort
+- lm0.0reg2l4h256d1mlppelnstp30k0.0001lr | lr=0.0001 | len25-49=1.0000 (n=1) | len75-99=0.9940 (n=1) | len125-149=0.8860 (n=1)
+- lm0.0reg4l4h64d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.9995 (n=1) | len75-99=0.9970 (n=1) | len125-149=0.9905 (n=1)
+
+============================================================
+TASK: unique_copy
+============================================================
+
+--- MODEL: ssm ---
+
+Task: unique_copy
+- ssms44l16d0.1dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0.1dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0.1dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l16d0dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0.1dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0.1dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0.1dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l256d0dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0.1dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0dr2mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0dr2mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0dr4mlplnstp30k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms44l64d0dr4mlplnstp30k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0.1dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0.1dr4mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0.1dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0dr4mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l16d0dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l256d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr4mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0.1dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr2mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr2mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr4mlplnstp60k0.0001lr | lr=0.0001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+- ssms48l64d0dr4mlplnstp60k0.001lr | lr=0.001 | len25-49=0.0000 (n=1) | len75-99=0.0000 (n=1) | len125-149=0.0000 (n=1)
+
+--- MODEL: hyb ---
+
+Task: unique_copy
+- hybsas41l1h16d0.1dr1mlppenolnstp30k0.001lr | lr=0.001 | len0-49=0.9030 (n=1) | len50-99=0.6415 (n=1) | len100-149=0.0085 (n=1)
+- hybsas44l1h16d0dr1mlppenolnstp60k0.001lr | lr=0.001 | len0-49=1.0000 (n=1) | len50-99=0.0000 (n=1) | len100-149=0.0000 (n=1)
+
+--- MODEL: lm ---
+
+Task: unique_copy
+- lm0.0reg2l2h64d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.9995 (n=1) | len75-99=0.9740 (n=1) | len125-149=0.3930 (n=1)
+- lm0.0reg2l4h64d1mlppelnstp30k0.001lr | lr=0.001 | len25-49=0.9995 (n=1) | len75-99=0.9670 (n=1) | len125-149=0.4120 (n=1)
+
