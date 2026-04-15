@@ -27,17 +27,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=False)
-        for l in [1,2,4]
-        for h in [1, 2, 4]
-        for d in [4, 16]
-        for dr in [0, 0.1]
-        for lr in [1e-3, 1e-4]
-        for btwmlp in [1, 2]
+        for l in [2]
+        for h in [1]
+        for d in [64]
+        for dr in [0.1]
+        for lr in [1e-3]
+        for btwmlp in [2]
     ]
     rc = default_hybrid_sweep()
 
     rc.architectures = archs
-    rc.use_nope = False
+    rc.use_nope = args.nope
     rc.hybrid_layer_pattern = args.hybrid_layer_pattern.strip().lower()
     
     rc.task = args.task
@@ -47,6 +47,6 @@ if __name__ == "__main__":
     rc.key_size = args.key_size
     rc.query_fraction = args.query_fraction
     
-    rc.save_final_weights = False
+    rc.save_final_weights = True
     rc.job_id = args.job_id
     main(rc)

@@ -453,7 +453,7 @@ def main(run_config: RunConfig) -> None:
                 trainer.train()
 
                 if run_config.save_final_weights:
-                    wpath = os.path.join(task_path, f"{output_tag}_weights.pt")
+                    wpath = os.path.join(task_path, f"{output_tag}_weights_seed{seed}_id{run_config.job_id}.pt")
                     torch.save(trainer.model.state_dict(), wpath)
 
                 if stop_state["should_stop"]:

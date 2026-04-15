@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument("--query_fraction", type=float, default=0.2)
     args = parser.parse_args()
     archs = [
-        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=True, dropout=dr)
+        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr, between_block_mlp_layers=btwmlp, dropout=dr)
         for l in [2, 4]
         for h in [2, 4]
         for d in [64, 256]
