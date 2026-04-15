@@ -1,5 +1,5 @@
 """
-Load a trained HybridGPT2S4 checkpoint and run one forward pass on a task sample.
+Load a trained HybridGPT2S4 checkpoint and run inference on one or more task samples.
 
 Architecture is read from the weights filename, supporting both legacy and newer
 modular names from language_modeling_train.py.
@@ -224,7 +224,7 @@ def infer_one_sample(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Single-sample inference for hybrid SSM/attention LM.")
+    parser = argparse.ArgumentParser(description="Inference for hybrid SSM/attention LM.")
     parser.add_argument("--weights", type=str, required=True, help="Path to *_weights.pt from training.")
     parser.add_argument("--task", type=str, choices=TASK_CHOICES, required=True)
     parser.add_argument("--seed", type=int, default=0, help="RNG seed when drawing a random sample (default: 0).")
@@ -233,7 +233,13 @@ def main():
         type=str,
         default=None,
         help="Optional: whitespace-separated token strings (vocabulary keys, e.g. '<bos>' '0' '1' '<sep>' '0' '<eos>'). "
-        "If omitted, one example is sampled from the task generator.",
+        "If omitted, random examples are sampled from the task generator.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=1,
+        help="Number of random task samples to generate when --tokens is omitted (default: 1).",
     )
     parser.add_argument(
         "--nope",
@@ -273,6 +279,10 @@ def main():
         parser.error("If you pass any of --n-layer, --n-head, --d-model, pass all three.")
     if args.layer_norm and args.no_layer_norm:
         parser.error("Pass at most one of --layer-norm or --no-layer-norm.")
+    if args.num_samples < 1:
+        parser.error("--num-samples must be at least 1.")
+    if args.tokens is not None and args.num_samples != 1:
+        parser.error("--num-samples can only be used when --tokens is omitted.")
 
     if all(explicit):
         if args.layer_pattern is not None:
@@ -330,8 +340,7 @@ def main():
         pos_ids = train_ds.get_pos_ids(len(instance), max(0, train_ds.n_positions - len(instance)))
         pos_ids = [0] * len(pos_ids)
     else:
-        eval_ds = EvalDataset(train_ds, 1)
-        instance, pos_ids, label = eval_ds[0]
+        eval_ds = EvalDataset(train_ds, args.num_samples)
 
     cfg = HybridConfig(
         vocab_size=len(tokenizer),
@@ -378,12 +387,22 @@ def main():
     #                 )
     #     return
 
-    out = infer_one_sample(model, tokenizer, instance, pos_ids, label, device)
-    print("Task:", args.task)
-    print("Full sequence:", " ".join(out["sequence_tokens"]))
-    print("Gold answer:  ", " ".join(out["gold_answer_tokens"]), f"({out['gold_answer_str']!r})")
-    print("Pred answer:  ", " ".join(out["pred_answer_tokens"]), f"({out['pred_answer_str']!r})")
-    print("Answer correct:", out["correct"])
+    if args.tokens is not None:
+        out = infer_one_sample(model, tokenizer, instance, pos_ids, label, device)
+        print("Task:", args.task)
+        print("Full sequence:", " ".join(out["sequence_tokens"]))
+        print("Gold answer:  ", " ".join(out["gold_answer_tokens"]), f"({out['gold_answer_str']!r})")
+        print("Pred answer:  ", " ".join(out["pred_answer_tokens"]), f"({out['pred_answer_str']!r})")
+        print("Answer correct:", out["correct"])
+    else:
+        results = [
+            infer_one_sample(model, tokenizer, instance, pos_ids, label, device)
+            for instance, pos_ids, label in eval_ds
+        ]
+        average_accuracy = sum(result["correct"] for result in results) / len(results)
+        print("Task:", args.task)
+        print("Num samples:", len(results))
+        print("Average accuracy:", average_accuracy)
 
 
 if __name__ == "__main__":
