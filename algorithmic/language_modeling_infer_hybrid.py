@@ -194,19 +194,32 @@ def infer_one_sample(
     device: torch.device,
 ):
     pad_id = tokenizer.pad_token_id
-    input_ids = torch.tensor([instance], dtype=torch.long, device=device)
-    position_ids = torch.tensor([pos_ids], dtype=torch.long, device=device)
+    answer_indices = [i for i in range(1, len(instance)) if label[i] != pad_id]
+    gold_answer = [instance[i] for i in answer_indices]
+
+    if answer_indices:
+        prefix_len = answer_indices[0]
+    else:
+        prefix_len = len(instance)
+
+    prompt_ids = list(instance[:prefix_len])
+    prompt_pos_ids = list(pos_ids[:prefix_len])
+    pred_answer = []
 
     model.eval()
     with torch.no_grad():
-        logits = model(input_ids, position_ids=position_ids).logits
+        for _ in range(len(answer_indices)):
+            input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+            position_ids = torch.tensor([prompt_pos_ids], dtype=torch.long, device=device)
+            logits = model(input_ids, position_ids=position_ids).logits
+            next_token = logits[0, -1, :].argmax(dim=-1).item()
+            pred_answer.append(next_token)
+            prompt_ids.append(next_token)
+            if prompt_pos_ids:
+                prompt_pos_ids.append(prompt_pos_ids[-1] + 1)
+            else:
+                prompt_pos_ids.append(0)
 
-    # logits[t] predicts token at t+1 (same as Trainer compute_metrics shift).
-    shift_pred = logits[0, :-1, :].argmax(dim=-1)
-
-    answer_indices = [i for i in range(1, len(instance)) if label[i] != pad_id]
-    gold_answer = [instance[i] for i in answer_indices]
-    pred_answer = [shift_pred[i - 1].item() for i in answer_indices]
     correct = pred_answer == gold_answer
 
     seq_tokens = tokenizer.convert_ids_to_tokens(instance, rm_special=False)
@@ -338,7 +351,6 @@ def main():
         label = copy.deepcopy(instance)
         label[:start_of_inference + 1] = [tokenizer.pad_token_id] * (start_of_inference + 1)
         pos_ids = train_ds.get_pos_ids(len(instance), max(0, train_ds.n_positions - len(instance)))
-        pos_ids = [0] * len(pos_ids)
     else:
         eval_ds = EvalDataset(train_ds, args.num_samples)
 
