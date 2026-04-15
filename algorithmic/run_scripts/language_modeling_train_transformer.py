@@ -17,6 +17,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
     parser.add_argument("--nope", action="store_true")
+    parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
@@ -37,8 +38,8 @@ if __name__ == "__main__":
     
     rc = default_transformer_sweep()
     rc.architectures = archs
-    rc.train_length_range = (0, 25)
-    rc.num_test_bins = 6
+    # rc.train_length_range = (0, 25)
+    # rc.num_test_bins = 6
 
 
     rc.task = args.task
@@ -50,4 +51,5 @@ if __name__ == "__main__":
     rc.monoid_n = args.monoid_n
     rc.key_size = args.key_size
     rc.query_fraction = args.query_fraction
+    rc.save_final_weights = args.save_final_weights
     main(rc)

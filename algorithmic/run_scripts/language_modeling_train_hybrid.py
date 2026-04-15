@@ -19,6 +19,7 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
     parser.add_argument("--nope", action="store_true")
+    parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--hybrid-layer-pattern", type=str, default="sa")
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
     parser.add_argument("--monoid_n", type=int, default=2)
@@ -27,10 +28,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=False)
-        for l in [2]
-        for h in [1]
-        for d in [64]
-        for dr in [0.1]
+        for l in [2, 8]
+        for h in [2, 4]
+        for d in [16, 256]
+        for dr in [0, 0.1]
         for lr in [1e-3]
         for btwmlp in [2]
     ]
@@ -47,6 +48,6 @@ if __name__ == "__main__":
     rc.key_size = args.key_size
     rc.query_fraction = args.query_fraction
     
-    rc.save_final_weights = True
+    rc.save_final_weights = args.save_final_weights
     rc.job_id = args.job_id
     main(rc)
