@@ -2,6 +2,7 @@ from transformers import GPT2LMHeadModel, GPT2Config
 from transformers.loss.loss_utils import ForCausalLMLoss
 from transformers.modeling_outputs import CausalLMOutput
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+from transformers.masking_utils import create_causal_mask
 import torch
 import torch.nn as nn
 
@@ -241,6 +242,8 @@ class HybridGPT2S4LMHeadModel(nn.Module):
             resid_pdrop=config.dropout,
             embd_pdrop=config.dropout,
         )
+        gpt2_cfg._attn_implementation = "eager"
+        self.gpt2_cfg = gpt2_cfg
 
         n_ssm = self.layer_kinds.count("s")
 
@@ -292,20 +295,35 @@ class HybridGPT2S4LMHeadModel(nn.Module):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
+        inputs_embeds = hidden_states
         device = hidden_states.device
+        cache_position = torch.arange(inputs_embeds.shape[1], device=device, dtype=torch.long)
         if position_ids is not None:
             position_ids = position_ids.view(-1, input_shape[-1])
         else:
-            seq_len = hidden_states.size(1)
-            position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(hidden_states.size(0), -1)
+            position_ids = cache_position.unsqueeze(0)
 
         hidden_states = hidden_states + self.wpe(position_ids)
         hidden_states = self.drop(hidden_states)
+        causal_attention_mask = create_causal_mask(
+            config=self.gpt2_cfg,
+            inputs_embeds=inputs_embeds,
+            attention_mask=None,
+            cache_position=cache_position,
+            past_key_values=None,
+            position_ids=position_ids,
+        )
 
         ssm_idx = 0
         for kind, block in zip(self.layer_kinds, self.blocks):
             if kind == "a":
-                out = block(hidden_states, use_cache=False, output_attentions=False)
+                out = block(
+                    hidden_states,
+                    cache_position=cache_position,
+                    attention_mask=causal_attention_mask,
+                    use_cache=False,
+                    output_attentions=False,
+                )
                 hidden_states = out[0] if isinstance(out, (tuple, list)) else out
             else:
                 z, _ = block(hidden_states)   # (B, L, D) in and out
