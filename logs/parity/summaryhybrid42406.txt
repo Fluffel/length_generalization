@@ -1,0 +1,1 @@
+hybsas42l2h16d0dr2mlpnopenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.8575		eval_len50-99_acc: 0.508		eval_len100-149_acc: 0.4415		lr: 0.001
