@@ -1,0 +1,5 @@
+hybsas42l2h16d0dr2mlppenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.0685		eval_len50-99_acc: 0.0		eval_len100-149_acc: 0.0		lr: 0.001
+hybsas42l2h16d0.1dr2mlppenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.033		eval_len50-99_acc: 0.0		eval_len100-149_acc: 0.0		lr: 0.001
+hybsas42l2h256d0dr2mlppenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5855		eval_len50-99_acc: 0.0035		eval_len100-149_acc: 0.0		lr: 0.001
+hybsas42l2h256d0.1dr2mlppenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.4055		eval_len50-99_acc: 0.0005		eval_len100-149_acc: 0.0		lr: 0.001
+hybsas42l4h16d0dr2mlppenolnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.0465		eval_len50-99_acc: 0.0		eval_len100-149_acc: 0.0		lr: 0.001
