@@ -78,7 +78,7 @@ python algorithmic/convenience_scripts/generate_summary_csv.py \
 Example — three architectures with MLP, three grouped lines, max-only:
 
 ```bash
-python algorithmic/convenience_scripts/generate_summary_plots.py \
+python algorithmic/convenience_scripts/generate_plot.py \
   --input-csv exports/all_results.csv \
   --task unique_copy \
   --include-pattern hyb,mlp \
@@ -93,7 +93,7 @@ python algorithmic/convenience_scripts/generate_summary_plots.py \
 Example — solids + per-series max, wildcard rest group:
 
 ```bash
-python algorithmic/convenience_scripts/generate_summary_plots.py \
+python algorithmic/convenience_scripts/generate_plot.py \
   --task sort \
   --output exports/plots/sort_custom.png \
   --title "Sort (selected)" \
