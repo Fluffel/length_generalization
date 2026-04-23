@@ -74,9 +74,9 @@ def create_transformer_config(tokenizer, n_positions: int, arch: ArchSlot) -> GP
                 bos_token_id=tokenizer.bos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
-                attn_pdrop=0,
-                resid_pdrop=0,
-                embd_pdrop=0,
+                attn_pdrop=arch.dropout,
+                resid_pdrop=arch.dropout,
+                embd_pdrop=arch.dropout,
             )
 
 def create_hybrid_config(tokenizer, n_positions: int, config: RunConfig, arch: ArchSlot) -> HybridConfig:

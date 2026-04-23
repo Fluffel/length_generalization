@@ -89,6 +89,7 @@ def format_log_prefix(
             f"{arch.n_layer}l",
             f"{arch.n_head}h",
             f"{arch.d_model}d",
+            f"{arch.dropout}",
             f"{arch.between_block_mlp_layers}mlp",
             f"{pe}",
             f"{ln_str}",
