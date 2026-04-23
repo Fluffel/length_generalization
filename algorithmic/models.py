@@ -57,20 +57,34 @@ def make_ssm_module(d_model: int, dropout: float, transposed: bool, kernel: str,
 
 
 class NoPE(nn.Module):
+    """Drop-in replacement for a positional-embedding module that contributes nothing.
+
+    Returns a 0-dim zero *tensor* rather than the Python scalar 0 so that downstream
+    code which does things like ``self.wpe(position_ids).to(inputs_embeds.device)``
+    (see ``transformers.models.gpt2.modeling_gpt2.GPT2Model.forward``) works
+    unchanged. The 0-dim tensor broadcasts against any embedding tensor.
+    """
+
     def __init__(self) -> None:
         super().__init__()
-    
+        self.register_buffer("_zero", torch.zeros(()), persistent=False)
+
     def forward(self, x):
-        return 0
+        return self._zero
 
 class CustomGPT2LMHeadModel(GPT2LMHeadModel):
-    """Base class that applies CustomMLP to every block and optionally disables layer norms."""
+    """Base class that applies CustomMLP to every block and optionally disables layer norms.
+    Args:
+
+    as_module (bool): If set to true, this will remove all embedding and head layers, such that the model can be used within layers.
+    """
     def __init__(self, config):
         super().__init__(config)
         for block in self.transformer.h:
             block.mlp = CustomMLP(config.n_embd, config.between_block_mlp_layers, config)
         if not config.layer_norm:
             set_identity_layernorms(self)
+        
 
 
 class NoPEGPT2LMHeadModel(CustomGPT2LMHeadModel):
@@ -200,12 +214,36 @@ class S4ForSequenceModeling(nn.Module):
             logits=logits
         )
 
-def _expand_hybrid_pattern(pattern: str, n_repeats: int) -> tuple[list[str], str]:
+def _expand_hybrid_pattern(pattern: str, n_repeats: int) -> tuple[list[str], list[tuple[str, int]]]:
+    """
+    Expand the hybrid pattern into a list of symbols and a list of (symbol, count) pairs.
+    Consecutive 'a' layers are collapsed into a single block (counted) so they can be
+    handled by one GPT-2 stack, whereas each 's' remains its own block.
+    """
     motif = pattern.strip().lower()
     if not motif or any(c not in "as" for c in motif):
         raise ValueError(f"layer_pattern must be non-empty and only contain 'a' and 's', got {pattern!r}")
-    expanded = list(motif * n_repeats)
-    return expanded, motif * n_repeats
+
+    # Repeat first so that adjacent 'a' runs across pattern repeats merge together
+    # (e.g. pattern 'a' repeated 2x becomes a single block of count 2, not two of count 1).
+    expanded = motif * n_repeats
+
+    run_length_encoding: list[tuple[str, int]] = []
+    i = 0
+    while i < len(expanded):
+        if expanded[i] == 'a':
+            j = i
+            while j < len(expanded) and expanded[j] == 'a':
+                j += 1
+            run_length_encoding.append(('a', j - i))
+            i = j
+        else:  # 's'
+            run_length_encoding.append(('s', 1))
+            i += 1
+
+    layer_kinds = [kind for kind, _ in run_length_encoding]
+    return layer_kinds, run_length_encoding
+
 
 
 class HybridGPT2S4LMHeadModel(nn.Module):
@@ -221,7 +259,7 @@ class HybridGPT2S4LMHeadModel(nn.Module):
         self.vocab_size = config.vocab_size
         self.embed_dim = config.n_embd
 
-        self.layer_kinds, self._flat_pattern = _expand_hybrid_pattern(
+        self.layer_kinds, self.layer_kinds_rle = _expand_hybrid_pattern(
             config.layer_pattern, config.n_pattern_repeats
         )
 
@@ -229,12 +267,23 @@ class HybridGPT2S4LMHeadModel(nn.Module):
         self.wpe = NoPE() if config.nope else nn.Embedding(config.n_positions, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
 
+        # Match GPT2PreTrainedModel._init_weights for the outer embeddings, otherwise
+        # nn.Embedding's default std=1 init (vs GPT-2's std=initializer_range≈0.02)
+        # blows up the first attention's QK products by ~(1/0.02)^2 and the softmax
+        # saturates on step 0 -> training never gets off the ground.
+        init_std = getattr(config, "initializer_range", 0.02)
+        nn.init.normal_(self.wte.weight, mean=0.0, std=init_std)
+        if isinstance(self.wpe, nn.Embedding):
+            nn.init.normal_(self.wpe.weight, mean=0.0, std=init_std)
+
         gpt2_cfg = GPT2Config(
             vocab_size=config.vocab_size,
             n_positions=config.n_positions,
             n_embd=config.n_embd,
             n_layer=1,
             n_head=config.n_head,
+            between_block_mlp_layers=config.between_block_mlp_layers,
+            layer_norm=config.layer_norm,
             bos_token_id=config.bos_token_id,
             eos_token_id=config.eos_token_id,
             pad_token_id=config.pad_token_id,
@@ -246,13 +295,23 @@ class HybridGPT2S4LMHeadModel(nn.Module):
         self.gpt2_cfg = gpt2_cfg
 
         n_ssm = self.layer_kinds.count("s")
-
+    
         self.blocks = nn.ModuleList()
-        for i, kind in enumerate(self.layer_kinds):
+        for kind, hidden_layer_count in self.layer_kinds_rle:
             if kind == "a":
-                gpt2_block = GPT2Block(gpt2_cfg, layer_idx=i)
-                gpt2_block.mlp = CustomMLP(config.n_embd, config.between_block_mlp_layers, config)
-                self.blocks.append(gpt2_block)
+                cfg = copy.deepcopy(gpt2_cfg)
+                cfg.n_layer = hidden_layer_count
+                gpt_2_head_model = CustomGPT2LMHeadModel(cfg)
+                # Neutralize the inner model's own embedding-side and final pieces so
+                # that only the outer wpe / drop / ln_f / lm_head are applied. This
+                # makes the hybrid with pattern "a"*k equivalent to a standalone
+                # CustomGPT2LMHeadModel with n_layer=k (up to the unused inner wte).
+                gpt_2_head_model.transformer.wpe = NoPE()
+                gpt_2_head_model.lm_head = nn.Identity()
+                gpt_2_head_model.transformer.drop = nn.Identity()
+                gpt_2_head_model.transformer.ln_f = nn.Identity()
+
+                self.blocks.append(gpt_2_head_model)
             else:
                 self.blocks.append(
                     make_ssm_module(
@@ -305,26 +364,18 @@ class HybridGPT2S4LMHeadModel(nn.Module):
 
         hidden_states = hidden_states + self.wpe(position_ids)
         hidden_states = self.drop(hidden_states)
-        causal_attention_mask = create_causal_mask(
-            config=self.gpt2_cfg,
-            inputs_embeds=inputs_embeds,
-            attention_mask=None,
-            cache_position=cache_position,
-            past_key_values=None,
-            position_ids=position_ids,
-        )
 
         ssm_idx = 0
         for kind, block in zip(self.layer_kinds, self.blocks):
             if kind == "a":
-                out = block(
-                    hidden_states,
-                    cache_position=cache_position,
-                    attention_mask=causal_attention_mask,
-                    use_cache=False,
-                    output_attentions=False,
+                # Pass the already-embedded hidden states as `inputs_embeds` so the
+                # inner GPT-2 does not try to look them up in its own wte. The inner
+                # wpe / drop / ln_f have been replaced with no-ops in __init__, so
+                # this is just the stack of attention+MLP blocks plus an Identity head.
+                out = block(inputs_embeds=hidden_states)
+                hidden_states = out.logits if hasattr(out, "logits") else (
+                    out[0] if isinstance(out, (tuple, list)) else out
                 )
-                hidden_states = out[0] if isinstance(out, (tuple, list)) else out
             else:
                 z, _ = block(hidden_states)   # (B, L, D) in and out
                 z = self.ssm_mlps[ssm_idx](z)
