@@ -4,6 +4,7 @@ import string
 from copy import deepcopy
 from collections import Counter
 
+from utils import RunConfig
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
@@ -545,6 +546,98 @@ class MQARWordProblemDataset(CustomDataset):
             yield instance, pos_ids, label
 
 
+class FlipFlopDataset(CustomDataset):
+    """
+    Flip-flop language modeling (Liu et al., 2023): simulates a 1-bit register.
+
+    Each instruction token (w, i, r) is followed by a bit (0 or 1):
+      - w <bit>: write <bit> to the register
+      - i <bit>: ignore (bit is random noise, register unchanged)
+      - r <bit>: read (bit = current register value)
+
+    The first instruction is always w (register init). Reads interleaved
+    in the input carry the correct register bit so the model sees the full
+    autoregressive history. The last instruction is r, whose bit is the
+    single-token answer after <sep>.
+
+    Sequence: <bos> w 1 i 0 w 0 r 0 i 1 w 1 r <sep> 1 <eos>
+
+    length_range controls the number of instructions (not tokens).
+    Following FFL(p), ignore_fraction is the fraction of middle
+    instructions that are ignores; the rest are split equally between
+    reads and writes (default p=0.8 -> 10% read, 10% write).
+    """
+
+    def __init__(self, length_range: tuple[int, int], max_test_length: int,
+                 ignore_fraction: float = 0.8, add_positional_offset: bool = True):
+        super().__init__(max_test_length * 2 + 3, add_positional_offset)
+
+        self.tokenizer = customTokenizer(["w", "i", "r", "0", "1"])
+        self.range_min, self.range_max = length_range
+        self.range_min = max(2, self.range_min)
+        self.range_max = max(2, self.range_max)
+        self.max_test_length = max_test_length
+        self.ignore_fraction = ignore_fraction
+        assert 0.0 <= ignore_fraction < 1.0
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
+
+    def __iter__(self):
+        w = self.tokenizer.vocab["w"]
+        i_tok = self.tokenizer.vocab["i"]
+        r = self.tokenizer.vocab["r"]
+        bit_0 = self.tokenizer.vocab["0"]
+        bit_1 = self.tokenizer.vocab["1"]
+
+        write_fraction = (1.0 - self.ignore_fraction) / 2
+
+        while True:
+            num_instr = random.randint(self.range_min, self.range_max)
+
+            # (instruction_token, bit_value) pairs for all but the last read
+            pairs: list[tuple[int, int]] = []
+            register = -1
+
+            # First instruction: always write
+            bit = random.randint(0, 1)
+            pairs.append((w, bit))
+            register = bit
+
+            # Middle instructions
+            for _ in range(1, num_instr - 1):
+                roll = random.random()
+                if roll < self.ignore_fraction:
+                    bit = random.randint(0, 1)
+                    pairs.append((i_tok, bit))
+                elif roll < self.ignore_fraction + write_fraction:
+                    bit = random.randint(0, 1)
+                    pairs.append((w, bit))
+                    register = bit
+                else:
+                    pairs.append((r, register))
+
+            # Build token sequence
+            instance = [self.tokenizer.bos_token_id]
+            for instr, b in pairs:
+                instance.append(instr)
+                instance.append(bit_0 if b == 0 else bit_1)
+            # Last instruction: r without its bit (that is the answer)
+            instance.append(r)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(bit_0 if register == 0 else bit_1)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            # Mask everything up to and including <sep>
+            # bos + 2*(num_instr-1) pairs + r + sep = 2*num_instr + 1
+            mask_len = 2 * num_instr + 1
+            label[:mask_len] = [self.tokenizer.pad_token_id] * mask_len
+
+            pos_ids = self.get_pos_ids(
+                len(instance), max(0, self.n_positions - len(instance)))
+
+            yield instance, pos_ids, label
+
+
 class EvalDataset(Dataset):
     def __init__(self, d: IterableDataset, num_data: int) -> None:
         super().__init__()
@@ -559,3 +652,102 @@ class EvalDataset(Dataset):
     
     def __len__(self):
         return len(self.data)
+
+
+def build_datasets(run_config: RunConfig):
+    train_length_range = run_config.train_length_range
+    test_length_ranges = run_config.test_length_ranges
+    max_test_length = test_length_ranges[-1][1]
+    test_num = run_config.test_num
+    task = run_config.task
+
+    match task:
+        case "bin_majority":
+            train_dataset = BinaryMajorityDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    BinaryMajorityDataset(r, max_test_length, add_positional_offset=False),
+                    test_num,
+                )
+                for r in test_length_ranges
+            }
+        case "majority":
+            train_dataset = MajorityDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(MajorityDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "bin_majority_interleave":
+            train_dataset = BinaryMajorityInterleaveDataset(train_length_range, max_test_length, period=3)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    BinaryMajorityInterleaveDataset(r, max_test_length, period=3, add_positional_offset=False),
+                    test_num,
+                )
+                for r in test_length_ranges
+            }
+        case "unique_copy":
+            train_dataset = UniqueCopyDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(UniqueCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "repeat_copy":
+            train_dataset = RepeatCopyDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(RepeatCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "sort":
+            train_dataset = SortDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(SortDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "parity":
+            train_dataset = ParityDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(ParityDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "addition":
+            train_dataset = AdditionDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(AdditionDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "mqar":
+            train_dataset = MQARWordProblemDataset(
+                train_length_range,
+                max_test_length,
+                key_size=run_config.key_size,
+                query_fraction=run_config.query_fraction,
+                monoid_type=run_config.monoid,
+                monoid_n=run_config.monoid_n,
+            )
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    MQARWordProblemDataset(
+                        r,
+                        max_test_length,
+                        add_positional_offset=False,
+                        key_size=run_config.key_size,
+                        query_fraction=run_config.query_fraction,
+                        monoid_type=run_config.monoid,
+                        monoid_n=run_config.monoid_n,
+                    ),
+                    test_num,
+                )
+                for r in test_length_ranges
+            }
+        case "flipflop":
+            train_dataset = FlipFlopDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(FlipFlopDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case _:
+            raise ValueError(f"Unknown task {task!r}")
+
+    return train_dataset, test_dataset, train_length_range, test_length_ranges
+
