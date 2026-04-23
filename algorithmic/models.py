@@ -1,59 +1,22 @@
+import copy
+import logging
 from transformers import GPT2LMHeadModel, GPT2Config
 from transformers.loss.loss_utils import ForCausalLMLoss
 from transformers.modeling_outputs import CausalLMOutput
-from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 from transformers.masking_utils import create_causal_mask
 import torch
 import torch.nn as nn
 
 from typing import Optional
-from dataclasses import dataclass
 
+from utils import ArchSlot, HybridConfig, RunConfig, SSMConfig, create_hybrid_config, create_ssm_config, create_transformer_config, mamba_config_from_ssm_config
+from utils import run_length_encode
 from model_extensions import S4D, CustomMLP, set_identity_layernorms
+# from mambapy.mamba2 import ResidualBlock as MambaResidualBlock
+from mambapy.mamba import ResidualBlock as MambaResidualBlock
 
-# ================================
-# Configuration classes
-# ================================
-@dataclass
-class HybridConfig:
-    vocab_size: int
-    n_positions: int
-    n_embd: int = 256
-    n_head: int = 4
-    dropout: float = 0.0
-    bos_token_id: Optional[int] = None
-    eos_token_id: Optional[int] = None
-    pad_token_id: Optional[int] = None
-    nope: bool = False
-    # Repeat `layer_pattern` this many times (each char is one block: "a" = GPT-2, "s" = SSM).
-    n_pattern_repeats: int = 1
-    layer_pattern: str = "sa"
-    between_block_mlp_layers: int = 1
-    layer_norm: bool = True
-    # between_block_mlp_norm: bool = False
-    ssm_kernel: str = "s4"
-
-@dataclass
-class S4Config:
-    vocab_size: int
-    n_embd: int = 256
-    n_layers: int = 4
-    dropout: float = 0.2
-    ssm_kernel: str = "s4"
-    between_block_mlp_layers: int = 1
-    layer_norm: bool = True
-    # between_block_mlp_norm: bool = False
-
-
-def make_ssm_module(d_model: int, dropout: float, transposed: bool, kernel: str, **kernel_kwargs):
-    k = kernel.lower().strip()
-    if k == "s4":
-        return S4D(d_model, dropout=dropout, transposed=transposed, **kernel_kwargs)
-    if k == "mamba":
-        raise NotImplementedError(
-            "ssm_kernel='mamba' is not implemented in this repo; use ssm_kernel='s4' or add a Mamba block in model_extensions.py."
-        )
-    raise ValueError(f"Unknown ssm_kernel {kernel!r} (expected 's4' or 'mamba').")
+LOGGER = logging.getLogger(__name__)
 
 
 class NoPE(nn.Module):
@@ -141,12 +104,19 @@ if tuple(map(int, torch.__version__.split('.')[:2])) >= (1, 12):
 else:
     dropout_fn = nn.Dropout2d
 
+def make_ssm_module(config: SSMConfig):
+    k = config.ssm_kernel.lower().strip()
+    if k == "s4":
+        return S4D(config.n_embd, dropout=config.dropout, transposed=False)
+    if k == "mamba":
+        return MambaResidualBlock(mamba_config_from_ssm_config(config))
+    raise ValueError(f"Unknown ssm_kernel {config.ssm_kernel!r} (expected 's4' or 'mamba').")
 
 
-class S4ForSequenceModeling(nn.Module):
+class SSMModel(nn.Module):
     """Code taken from https://github.com/state-spaces/s4."""
 
-    def __init__(self, config: S4Config):
+    def __init__(self, config: SSMConfig):
         super().__init__()
 
         self.config = config
@@ -155,13 +125,8 @@ class S4ForSequenceModeling(nn.Module):
 
         self.wte = nn.Embedding(self.vocab_size, self.embed_dim)
 
-        self.s4_layers = nn.ModuleList([
-            make_ssm_module(
-                config.n_embd,
-                dropout=config.dropout,
-                transposed=False,
-                kernel=config.ssm_kernel,
-            )
+        self.ssm_layers = nn.ModuleList([
+            make_ssm_module(config)
             for _ in range(config.n_layers)
         ])
 
@@ -197,9 +162,9 @@ class S4ForSequenceModeling(nn.Module):
         else:
             x = inputs_embeds
 
-        for layer, mlp, norm, dropout in zip(self.s4_layers, self.mlps, self.norms, self.dropouts):
-            z, _ = layer(x)   # (B, L, n_embd) in and out
-            z = mlp(z)
+        for layer, mlp, norm, dropout in zip(self.ssm_layers, self.mlps, self.norms, self.dropouts):
+            z = layer(x)   # (B, L, n_embd) in and out
+            z = mlp(z) # moved here from the S4 code
             z = dropout(z)
             x = norm(x + z)
 
@@ -246,7 +211,7 @@ def _expand_hybrid_pattern(pattern: str, n_repeats: int) -> tuple[list[str], lis
 
 
 
-class HybridGPT2S4LMHeadModel(nn.Module):
+class HybridSSMTransformerModel(nn.Module):
     """
     Stacks GPT-2 blocks and SSM blocks according to `config.layer_pattern` repeated
     `config.n_pattern_repeats` times (e.g. pattern \"sa\" x 2 → S,A,S,A).
@@ -291,8 +256,14 @@ class HybridGPT2S4LMHeadModel(nn.Module):
             resid_pdrop=config.dropout,
             embd_pdrop=config.dropout,
         )
-        gpt2_cfg._attn_implementation = "eager"
-        self.gpt2_cfg = gpt2_cfg
+        ssm_config = SSMConfig(
+            vocab_size=config.vocab_size,
+            n_embd=config.n_embd,
+            dropout=config.dropout,
+            ssm_kernel=config.ssm_kernel,
+        )
+        # gpt2_cfg._attn_implementation = "eager"
+        # self.gpt2_cfg = gpt2_cfg
 
         n_ssm = self.layer_kinds.count("s")
     
@@ -314,12 +285,7 @@ class HybridGPT2S4LMHeadModel(nn.Module):
                 self.blocks.append(gpt_2_head_model)
             else:
                 self.blocks.append(
-                    make_ssm_module(
-                        config.n_embd,
-                        dropout=config.dropout,
-                        transposed=False,
-                        kernel=config.ssm_kernel,
-                    )
+                    make_ssm_module(ssm_config)
                 )
 
         self.ssm_norms = nn.ModuleList(
@@ -377,7 +343,7 @@ class HybridGPT2S4LMHeadModel(nn.Module):
                     out[0] if isinstance(out, (tuple, list)) else out
                 )
             else:
-                z, _ = block(hidden_states)   # (B, L, D) in and out
+                z = block(hidden_states)   # (B, L, D) in and out
                 z = self.ssm_mlps[ssm_idx](z)
                 z = self.ssm_dropouts[ssm_idx](z)
                 hidden_states = self.ssm_norms[ssm_idx](hidden_states + z)
@@ -395,3 +361,43 @@ class HybridGPT2S4LMHeadModel(nn.Module):
             loss=loss,
             logits=logits
         )
+
+def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int):
+    match run_config.model_family:
+        case "transformer":
+            cfg = create_transformer_config(tokenizer, n_positions, arch)
+
+            if run_config.use_nope:
+                LOGGER.info("Building transformer model variant=nope")
+                return NoPEGPT2LMHeadModel(cfg)
+            if run_config.regularize != 0:
+                LOGGER.info("Building transformer model variant=regularized coef=%s", run_config.regularize)
+                return RegGPT2LMHeadModel(cfg, run_config.regularize)
+
+            LOGGER.info("Building transformer model variant=custom")
+       
+            return CustomGPT2LMHeadModel(cfg)
+        case "ssm":
+            cfg = create_ssm_config(tokenizer, run_config, arch)
+            LOGGER.info("Building ssm model kernel=%s", run_config.ssm_kernel)
+            return SSMModel(cfg)
+        case "hybrid":
+            cfg = create_hybrid_config(tokenizer, n_positions, run_config, arch)
+            LOGGER.info(
+                "Building hybrid model pattern=%s kernel=%s nope=%s",
+                run_config.hybrid_layer_pattern,
+                run_config.ssm_kernel,
+                run_config.use_nope,
+            )
+            return HybridSSMTransformerModel(cfg)
+        case _:
+            raise ValueError(run_config.model_family)
+
+
+if __name__ == "__main__":
+    pattern = "saass"
+    n_repeats = 2
+    layer_kinds, run_length_encoded = _expand_hybrid_pattern(pattern, n_repeats)
+    print("layer_kinds:", layer_kinds)
+    for i, (kind, hidden_layer_count) in enumerate(run_length_encoded):
+        print(f"Block {i}: {kind} with {hidden_layer_count} sub-layers")

@@ -1,10 +1,101 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from itertools import groupby
+from typing import Iterator, Literal, Optional, Tuple
+
+# from mambapy.mamba2 import Mamba2Config
+from mambapy.mamba import MambaConfig
+from transformers import GPT2Config
 
 ModelFamily = Literal["transformer", "ssm", "hybrid"]
 
+
+# ================================
+# Configuration classes
+# ================================
+@dataclass
+class HybridConfig:
+    vocab_size: int
+    n_positions: int
+    n_embd: int = 256
+    n_head: int = 4
+    dropout: float = 0.0
+    bos_token_id: Optional[int] = None
+    eos_token_id: Optional[int] = None
+    pad_token_id: Optional[int] = None
+    nope: bool = False
+    # Repeat `layer_pattern` this many times (each char is one block: "a" = GPT-2, "s" = SSM).
+    n_pattern_repeats: int = 1
+    layer_pattern: str = "sa"
+    between_block_mlp_layers: int = 1
+    layer_norm: bool = True
+    # between_block_mlp_norm: bool = False
+    ssm_kernel: str = "s4"
+
+@dataclass
+class SSMConfig:
+    vocab_size: int
+    n_embd: int = 256
+    n_layers: int = 4
+    d_head: int = 4 # Used only in Mamba2. There is a comment in their code, questioning whether this shouldn't be n_heads. I'm not sure what to do with it. It will be used as n_heads for now.
+    dropout: float = 0.2
+    ssm_kernel: str = "s4"
+    between_block_mlp_layers: int = 1
+    layer_norm: bool = True
+    # between_block_mlp_norm: bool = False
+
+def mamba_config_from_ssm_config(ssm_config: SSMConfig) -> MambaConfig:
+    return MambaConfig(
+        d_model=ssm_config.n_embd,
+        n_layers=ssm_config.n_layers
+    )
+
+def create_ssm_config(tokenizer, config: RunConfig, arch: ArchSlot) -> SSMConfig:
+    return SSMConfig(
+        vocab_size=len(tokenizer),
+        n_embd=arch.d_model,
+        n_layers=arch.n_layer,
+        dropout=arch.dropout,
+        ssm_kernel=config.ssm_kernel,
+        between_block_mlp_layers=arch.between_block_mlp_layers,
+        layer_norm=arch.layer_norm,
+    )
+
+def create_transformer_config(tokenizer, n_positions: int, arch: ArchSlot) -> GPT2Config:
+    return GPT2Config(
+                vocab_size=len(tokenizer),
+                n_positions=n_positions,
+                n_embd=arch.d_model,
+                n_layer=arch.n_layer,
+                n_head=arch.n_head,
+                between_block_mlp_layers=arch.between_block_mlp_layers,
+                layer_norm=arch.layer_norm,
+                bos_token_id=tokenizer.bos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
+                attn_pdrop=0,
+                resid_pdrop=0,
+                embd_pdrop=0,
+            )
+
+def create_hybrid_config(tokenizer, n_positions: int, config: RunConfig, arch: ArchSlot) -> HybridConfig:
+    return HybridConfig(
+                vocab_size=len(tokenizer),
+                n_positions=n_positions,
+                n_embd=arch.d_model,
+                n_head=arch.n_head,
+                dropout=arch.dropout,
+                bos_token_id=tokenizer.bos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
+                nope=config.use_nope,
+                n_pattern_repeats=arch.n_layer,
+                layer_pattern=config.hybrid_layer_pattern,
+                between_block_mlp_layers=arch.between_block_mlp_layers,
+                layer_norm=arch.layer_norm,
+                ssm_kernel=config.ssm_kernel,
+            )
 
 @dataclass
 class ArchSlot:
@@ -125,3 +216,8 @@ def default_hybrid_sweep() -> RunConfig:
         architectures=archs,
         hybrid_layer_pattern="sa",
     )
+
+def run_length_encode(data: str) -> Iterator[Tuple[str, int]]:
+    """Returns run length encoded Tuples for string"""
+    # A memory efficient (lazy) and pythonic solution using generators
+    return ((x, sum(1 for _ in y)) for x, y in groupby(data))

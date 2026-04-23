@@ -15,10 +15,12 @@ from utils import ArchSlot, default_transformer_sweep
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
+    parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--warmup-steps", type=int, default=None)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
@@ -27,13 +29,12 @@ if __name__ == "__main__":
     parser.add_argument("--query_fraction", type=float, default=0.2)
     args = parser.parse_args()
     archs = [
-        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr, between_block_mlp_layers=btwmlp, dropout=dr)
+        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr, between_block_mlp_layers=btwmlp)
         for l in [2, 4]
-        for h in [2, 4]
-        for d in [64, 256]
-        for dr in [0, 0.1]
-        for btwmlp in [1, 2]
-        for lr in [1e-3, 1e-4]
+        for h in [1, 2]
+        for d in [16, 64, 256]
+        for btwmlp in [2]
+        for lr in [1e-3]
     ]
     
     rc = default_transformer_sweep()
@@ -52,4 +53,13 @@ if __name__ == "__main__":
     rc.key_size = args.key_size
     rc.query_fraction = args.query_fraction
     rc.save_final_weights = args.save_final_weights
+
+    if args.train_steps is not None:
+        rc.max_steps_default = args.train_steps
+        rc.max_steps_large = args.train_steps
+    if args.warmup_steps is not None:
+        rc.warmup_default = args.warmup_steps
+        rc.warmup_large = args.warmup_steps
+    
+    rc.job_id = args.job_id
     main(rc)

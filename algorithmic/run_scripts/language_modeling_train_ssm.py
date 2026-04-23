@@ -15,12 +15,13 @@ from utils import default_ssm_sweep, ArchSlot
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--warmup-steps", type=int, default=None)
+    parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba"])
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--key_size", type=int, default=32)
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp)
-        for l in [4, 8]
+        for l in [2, 4]
         for d in [16, 256]
         for dr in [0, 0.1]
         for btwmlp in [2, 4]
@@ -39,6 +40,7 @@ if __name__ == "__main__":
     rc.architectures = archs
     # rc.train_length_range = (0, 25)
     # rc.num_test_bins = 6
+    rc.ssm_kernel = args.ssm_kernel
     rc.save_final_weights = args.save_final_weights
     rc.task = args.task
     rc.seeds = args.seeds

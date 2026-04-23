@@ -1,36 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import random
+import sys
 from typing import Any
 
 import numpy as np
 import torch
-from transformers import GPT2Config, Trainer, TrainerCallback, TrainingArguments
+from transformers import Trainer, TrainerCallback, TrainingArguments
 
-from dataset_generators import (
-    AdditionDataset,
-    BinaryMajorityDataset,
-    BinaryMajorityInterleaveDataset,
-    MajorityDataset,
-    MQARWordProblemDataset,
-    ParityDataset,
-    RepeatCopyDataset,
-    SortDataset,
-    UniqueCopyDataset,
-)
-from dataset_generators import EvalDataset
-from models import (
-    CustomGPT2LMHeadModel,
-    HybridConfig,
-    HybridGPT2S4LMHeadModel,
-    NoPEGPT2LMHeadModel,
-    RegGPT2LMHeadModel,
-    S4Config,
-    S4ForSequenceModeling,
-)
+from dataset_generators import build_datasets
+from models import build_model
 from utils import ArchSlot, RunConfig, default_hybrid_sweep, default_ssm_sweep, default_transformer_sweep
+
+LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +124,17 @@ def format_log_prefix(
     return "".join(parts)
 
 
+def configure_logging() -> None:
+    """Configure root logging so INFO messages reach cluster stdout."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+    LOGGER.info("Root logging configured")
+
+
 class AlgorithmicTrainCallback(TrainerCallback):
     def __init__(
         self,
@@ -218,157 +214,10 @@ class customCollator:
         return {"input_ids": input_ids, "position_ids": pos_ids, "labels": labels}
 
 
-def build_datasets(run_config: RunConfig):
-    train_length_range = run_config.train_length_range
-    test_length_ranges = run_config.test_length_ranges
-    max_test_length = test_length_ranges[-1][1]
-    test_num = run_config.test_num
-    task = run_config.task
-
-    match task:
-        case "bin_majority":
-            train_dataset = BinaryMajorityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    BinaryMajorityDataset(r, max_test_length, add_positional_offset=False),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
-        case "majority":
-            train_dataset = MajorityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(MajorityDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "bin_majority_interleave":
-            train_dataset = BinaryMajorityInterleaveDataset(train_length_range, max_test_length, period=3)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    BinaryMajorityInterleaveDataset(r, max_test_length, period=3, add_positional_offset=False),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
-        case "unique_copy":
-            train_dataset = UniqueCopyDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(UniqueCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "repeat_copy":
-            train_dataset = RepeatCopyDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(RepeatCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "sort":
-            train_dataset = SortDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(SortDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "parity":
-            train_dataset = ParityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(ParityDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "addition":
-            train_dataset = AdditionDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(AdditionDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
-        case "mqar":
-            train_dataset = MQARWordProblemDataset(
-                train_length_range,
-                max_test_length,
-                key_size=run_config.key_size,
-                query_fraction=run_config.query_fraction,
-                monoid_type=run_config.monoid,
-                monoid_n=run_config.monoid_n,
-            )
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    MQARWordProblemDataset(
-                        r,
-                        max_test_length,
-                        add_positional_offset=False,
-                        key_size=run_config.key_size,
-                        query_fraction=run_config.query_fraction,
-                        monoid_type=run_config.monoid,
-                        monoid_n=run_config.monoid_n,
-                    ),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
-        case _:
-            raise ValueError(f"Unknown task {task!r}")
-
-    return train_dataset, test_dataset, train_length_range, test_length_ranges
-
-
-def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int):
-    v = len(tokenizer)
-    match run_config.model_family:
-        case "transformer":
-            cfg = GPT2Config(
-                vocab_size=v,
-                n_positions=n_positions,
-                n_embd=arch.d_model,
-                n_layer=arch.n_layer,
-                n_head=arch.n_head,
-                between_block_mlp_layers=arch.between_block_mlp_layers,
-                bos_token_id=tokenizer.bos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                attn_pdrop=0,
-                resid_pdrop=0,
-                embd_pdrop=0,
-                layer_norm=arch.layer_norm,
-            )
-            if run_config.use_nope:
-                return NoPEGPT2LMHeadModel(cfg)
-            if run_config.regularize != 0:
-                return RegGPT2LMHeadModel(cfg, run_config.regularize)
-            return CustomGPT2LMHeadModel(cfg)
-        case "ssm":
-            cfg = S4Config(
-                vocab_size=v,
-                n_embd=arch.d_model,
-                n_layers=arch.n_layer,
-                dropout=arch.dropout,
-                ssm_kernel=run_config.ssm_kernel,
-                between_block_mlp_layers=arch.between_block_mlp_layers,
-                layer_norm=arch.layer_norm,
-            )
-            return S4ForSequenceModeling(cfg)
-        case "hybrid":
-            cfg = HybridConfig(
-                vocab_size=v,
-                n_positions=n_positions,
-                n_embd=arch.d_model,
-                n_head=arch.n_head,
-                dropout=arch.dropout,
-                bos_token_id=tokenizer.bos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                nope=run_config.use_nope,
-                n_pattern_repeats=arch.n_layer,
-                layer_pattern=run_config.hybrid_layer_pattern,
-                between_block_mlp_layers=arch.between_block_mlp_layers,
-                layer_norm=arch.layer_norm,
-                ssm_kernel=run_config.ssm_kernel,
-            )
-            return HybridGPT2S4LMHeadModel(cfg)
-        case _:
-            raise ValueError(run_config.model_family)
-
 
 def main(run_config: RunConfig) -> None:
     global train_length_range, test_length_ranges
+    configure_logging()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _ = device
@@ -380,6 +229,8 @@ def main(run_config: RunConfig) -> None:
     task_path = os.path.join(run_config.log_dir, run_config.task)
     os.makedirs(task_path, exist_ok=True)
     summary_path = os.path.join(task_path, _summary_rel_path(run_config))
+    LOGGER.info("Task output path: %s", task_path)
+    LOGGER.info("Summary path: %s", summary_path)
 
     per_device_bz = (
         run_config.batch_size // torch.cuda.device_count()
@@ -412,7 +263,7 @@ def main(run_config: RunConfig) -> None:
                 output_tag = format_log_prefix(run_config, arch, max_steps)
 
                 model = build_model(run_config, arch, tokenizer, n_positions)
-
+                print("wte std:", model.wte.weight.std().item() if hasattr(model, "wte") else model.transformer.wte.weight.std().item())
                 training_args = TrainingArguments(
                     output_dir=task_path,  # save_strategy="no" → nothing written here; one dir for all runs
                     per_device_train_batch_size=per_device_bz,
