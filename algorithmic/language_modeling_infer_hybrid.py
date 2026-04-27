@@ -14,6 +14,7 @@ import os
 import random
 import re
 import torch
+import torch.nn as nn
 
 from dataset_generators import (
     AdditionDataset,
@@ -27,7 +28,8 @@ from dataset_generators import (
     UniqueCopyDataset,
 )
 from dataset_generators import EvalDataset
-from models import HybridConfig, HybridGPT2S4LMHeadModel
+from models import build_model
+from utils import ArchSlot, RunConfig
 
 TASK_CHOICES = [
     "bin_majority",
@@ -42,8 +44,8 @@ TASK_CHOICES = [
 ]
 
 # Default from current train setup. Can be auto-adjusted from checkpoint shape.
-TRAIN_LENGTH_RANGE = (0, 50)
-MAX_TEST_LENGTH = 150
+TRAIN_LENGTH_RANGE = (0, 49)
+MAX_TEST_LENGTH = 149
 
 
 _WEIGHTS_NAME_RE_NEW = re.compile(
@@ -56,10 +58,28 @@ _WEIGHTS_NAME_RE_MODULAR = re.compile(
     r"^hyb(.+?)(\d+)l(\d+)h(\d+)d([0-9.]+)dr(\d+)mlp(nope|pe)(noln|ln)"
     r"stp([0-9.]+)k([0-9eE+\-\.]+)lr_weights(?:_seed\d+_id\d+)?\.pt$"
 )
+_WEIGHTS_NAME_RE_OLMO = re.compile(
+    r"^olmohyb([as]+)(\d+)l(\d+)h(\d+)d([0-9.]+)dr"
+    r"stp([0-9.]+)k([0-9eE+\-\.]+)lr_weights(?:_seed\d+_id\d+)?\.pt$"
+)
 
 
 def parse_architecture_from_weights_path(path: str) -> dict:
     base = os.path.basename(path)
+    m = _WEIGHTS_NAME_RE_OLMO.match(base)
+    if m:
+        motif, n_rep, nh, nd, _dr_s, _steps_k, _lr = m.groups()
+        return {
+            "layer_pattern": motif,
+            "n_pattern_repeats": int(n_rep),
+            "n_head": int(nh),
+            "d_model": int(nd),
+            "between_block_mlp_layers": 1,
+            "layer_norm": True,
+            "nope": None,  # OLMo weight names do not currently encode rope/no-rope.
+            "ssm_kernel": "gdn",
+            "olmo": True,
+        }
     m = _WEIGHTS_NAME_RE_MODULAR.match(base)
     if m:
         pattern_and_kernel, n_rep, nh, nd, _dr_s, mlp_layers, pe_mode, ln_mode, _steps_k, _lr = m.groups()
@@ -82,6 +102,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
             "layer_norm": ln_mode == "ln",
             "nope": pe_mode == "nope",
             "ssm_kernel": ssm_kernel,
+            "olmo": False,
         }
     m = _WEIGHTS_NAME_RE_NEW.match(base)
     if m:
@@ -95,6 +116,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
             "layer_norm": True,
             "nope": None,
             "ssm_kernel": "s4",
+            "olmo": False,
         }
     m = _WEIGHTS_NAME_RE_LEGACY.match(base)
     if m:
@@ -108,6 +130,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
             "layer_norm": True,
             "nope": None,
             "ssm_kernel": "s4",
+            "olmo": False,
         }
     raise ValueError(
         f"Cannot parse hybrid architecture from filename {base!r}. "
@@ -186,7 +209,7 @@ def tokens_string_to_ids(tokenizer, text: str) -> list[int]:
 
 
 def infer_one_sample(
-    model: HybridGPT2S4LMHeadModel,
+    model: nn.Module,
     tokenizer,
     instance: list[int],
     pos_ids: list[int],
@@ -208,6 +231,11 @@ def infer_one_sample(
 
     model.eval()
     with torch.no_grad():
+        # Teacher-forced forward pass on the full sequence for alignment diagnostics.
+        full_input_ids = torch.tensor([instance], dtype=torch.long, device=device)
+        full_position_ids = torch.tensor([pos_ids], dtype=torch.long, device=device)
+        full_logits = model(full_input_ids, position_ids=full_position_ids).logits[0]
+
         for _ in range(len(answer_indices)):
             input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
             position_ids = torch.tensor([prompt_pos_ids], dtype=torch.long, device=device)
@@ -226,6 +254,24 @@ def infer_one_sample(
     gold_str = " ".join(tokenizer.convert_ids_to_tokens(gold_answer, rm_special=True))
     pred_str = " ".join(tokenizer.convert_ids_to_tokens(pred_answer, rm_special=True))
 
+    # Alignment diagnostics on supervised targets (positions where labels are not pad).
+    target_positions = [i for i in range(len(label)) if label[i] != pad_id]
+    same_pos_pred_ids = [int(full_logits[i].argmax(dim=-1).item()) for i in target_positions]
+    same_pos_gold_ids = [instance[i] for i in target_positions]
+    same_pos_acc = (
+        sum(int(p == g) for p, g in zip(same_pos_pred_ids, same_pos_gold_ids)) / len(target_positions)
+        if target_positions else 0.0
+    )
+
+    # Shifted objective: logits[i-1] predicts token at i.
+    shifted_positions = [i for i in target_positions if i > 0]
+    shifted_pred_ids = [int(full_logits[i - 1].argmax(dim=-1).item()) for i in shifted_positions]
+    shifted_gold_ids = [instance[i] for i in shifted_positions]
+    shifted_acc = (
+        sum(int(p == g) for p, g in zip(shifted_pred_ids, shifted_gold_ids)) / len(shifted_positions)
+        if shifted_positions else 0.0
+    )
+
     return {
         "sequence_tokens": seq_tokens,
         "gold_answer_tokens": tokenizer.convert_ids_to_tokens(gold_answer, rm_special=True),
@@ -233,6 +279,11 @@ def infer_one_sample(
         "gold_answer_str": gold_str,
         "pred_answer_str": pred_str,
         "correct": correct,
+        "same_pos_acc": same_pos_acc,
+        "shifted_acc": shifted_acc,
+        "same_pos_pred_tokens": tokenizer.convert_ids_to_tokens(same_pos_pred_ids, rm_special=False),
+        "shifted_pred_tokens": tokenizer.convert_ids_to_tokens(shifted_pred_ids, rm_special=False),
+        "target_tokens": tokenizer.convert_ids_to_tokens(same_pos_gold_ids, rm_special=False),
     }
 
 
@@ -259,10 +310,18 @@ def main():
         action="store_true",
         help="Force no positional embeddings for explicit/legacy configs. Modular filenames infer this automatically.",
     )
-    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
-    parser.add_argument("--monoid_n", type=int, default=2)
-    parser.add_argument("--key_size", type=int, default=32)
-    parser.add_argument("--query_fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--use-olmo",
+        "--use_olmo",
+        action="store_true",
+        help=(
+            "Load the checkpoint with OLMo-core hybrid blocks. "
+            "When enabled, --between-block-mlp-layers and --no-layer-norm are ignored "
+            "(OLMo uses one FFN block and always keeps layer norm), and OLMo positional "
+            "encoding is used instead of GPT-2 absolute embeddings."
+        ),
+    )
+    parser.add_argument("--model-family", type=str, default="hybrid", choices=["hybrid", "transformer", "ssm"])
     parser.add_argument("--n-layer", type=int, default=None)
     parser.add_argument("--n-head", type=int, default=None)
     parser.add_argument("--d-model", type=int, default=None)
@@ -281,6 +340,10 @@ def main():
         default=None,
         help="When passing explicit layer dims: motif of 'a' (attention) and 's' (SSM) repeated --n-layer times (default: 'sa' or 'as' from --start-with-attention).",
     )
+    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
+    parser.add_argument("--monoid_n", type=int, default=2)
+    parser.add_argument("--key_size", type=int, default=32)
+    parser.add_argument("--query_fraction", type=float, default=0.2)
     args = parser.parse_args()
 
     explicit = (
@@ -323,6 +386,10 @@ def main():
     nope = arch["nope"] if arch["nope"] is not None else args.nope
     if arch["nope"] is not None and arch["nope"] != args.nope:
         print(f"[info] Ignoring --nope={args.nope}: filename implies nope={arch['nope']}.")
+    inferred_olmo = bool(arch.get("olmo", False))
+    use_olmo = args.use_olmo or inferred_olmo
+    if inferred_olmo and not args.use_olmo:
+        print("[info] Inferred OLMo checkpoint from filename; enabling --use-olmo.")
 
     state = torch.load(args.weights, map_location="cpu")
     max_test_length = infer_max_test_length_from_state(args.task, state, MAX_TEST_LENGTH)
@@ -354,23 +421,35 @@ def main():
     else:
         eval_ds = EvalDataset(train_ds, args.num_samples)
 
-    cfg = HybridConfig(
-        vocab_size=len(tokenizer),
-        n_positions=train_ds.n_positions,
-        n_embd=arch["d_model"],
+    layer_norm = arch["layer_norm"]
+    if use_olmo and not layer_norm:
+        print("[info] Ignoring no-layer-norm setting for OLMo; layer norm is always enabled.")
+        layer_norm = True
+    if use_olmo and arch["between_block_mlp_layers"] != 1:
+        print(
+            "[info] Ignoring --between-block-mlp-layers for OLMo; "
+            "OLMo uses one FFN block per transformer block."
+        )
+
+    arch_slot = ArchSlot(
+        n_layer=arch["n_pattern_repeats"],
         n_head=arch["n_head"],
-        dropout=0.0,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        nope=nope,
-        n_pattern_repeats=arch["n_pattern_repeats"],
-        layer_pattern=arch["layer_pattern"],
+        d_model=arch["d_model"],
         between_block_mlp_layers=arch["between_block_mlp_layers"],
-        layer_norm=arch["layer_norm"],
-        ssm_kernel=arch["ssm_kernel"],
+        layer_norm=layer_norm,
+        dropout=0.0,
+        lr=1e-3,
     )
-    model = HybridGPT2S4LMHeadModel(cfg)
+    run_config = RunConfig(
+        model_family=args.model_family,
+        architectures=[arch_slot],
+        use_nope=nope,
+        use_olmo_core=use_olmo,
+        hybrid_layer_pattern=arch["layer_pattern"],
+        # OLMo hybrid path always maps SSM layers to GatedDeltaNet internally.
+        ssm_kernel="s4" if use_olmo else arch["ssm_kernel"],
+    )
+    model = build_model(run_config, arch_slot, tokenizer, train_ds.n_positions)
     model.load_state_dict(state, strict=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -398,14 +477,13 @@ def main():
     #                     f"pred {tokenizer.vocab_inv[pred_next[t]]!r}"
     #                 )
     #     return
+    results = []
 
     if args.tokens is not None:
         out = infer_one_sample(model, tokenizer, instance, pos_ids, label, device)
+        results.append(out)
         print("Task:", args.task)
-        print("Full sequence:", " ".join(out["sequence_tokens"]))
-        print("Gold answer:  ", " ".join(out["gold_answer_tokens"]), f"({out['gold_answer_str']!r})")
-        print("Pred answer:  ", " ".join(out["pred_answer_tokens"]), f"({out['pred_answer_str']!r})")
-        print("Answer correct:", out["correct"])
+        
     else:
         results = [
             infer_one_sample(model, tokenizer, instance, pos_ids, label, device)
@@ -416,6 +494,16 @@ def main():
         print("Num samples:", len(results))
         print("Average accuracy:", average_accuracy)
 
+    for out in results:
+        print("Full sequence:", " ".join(out["sequence_tokens"]))
+        print("Gold answer:  ", " ".join(out["gold_answer_tokens"]), f"({out['gold_answer_str']!r})")
+        print("Pred answer:  ", " ".join(out["pred_answer_tokens"]), f"({out['pred_answer_str']!r})")
+        print("Teacher-forced same-position acc on supervised targets:", out["same_pos_acc"])
+        print("Teacher-forced shifted acc on supervised targets:      ", out["shifted_acc"])
+        print("Target tokens:      ", " ".join(out["target_tokens"]))
+        print("Same-position preds:", " ".join(out["same_pos_pred_tokens"]))
+        print("Shifted preds:      ", " ".join(out["shifted_pred_tokens"]))
+        print("Answer correct:", out["correct"])
 
 if __name__ == "__main__":
     main()

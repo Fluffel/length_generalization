@@ -1,20 +1,26 @@
 import copy
+import importlib
 import logging
+from typing import Optional
+
 from transformers import GPT2LMHeadModel, GPT2Config
 from transformers.loss.loss_utils import ForCausalLMLoss
 from transformers.modeling_outputs import CausalLMOutput
-from transformers.models.gpt2.modeling_gpt2 import GPT2Model
-from transformers.masking_utils import create_causal_mask
 import torch
 import torch.nn as nn
 
-from typing import Optional
-
+from mambapy.mamba import ResidualBlock as MambaResidualBlock
+from olmo_core.nn.transformer.config import TransformerConfig, TransformerBlockConfig
+from olmo_core.nn.attention import AttentionConfig
+from olmo_core.nn.attention.recurrent import GatedDeltaNetConfig
 from utils import ArchSlot, HybridConfig, RunConfig, SSMConfig, create_hybrid_config, create_ssm_config, create_transformer_config, mamba_config_from_ssm_config
 from utils import run_length_encode
 from model_extensions import S4D, CustomMLP, set_identity_layernorms
-# from mambapy.mamba2 import ResidualBlock as MambaResidualBlock
-from mambapy.mamba import ResidualBlock as MambaResidualBlock
+
+# AttentionConfig = None
+# GatedDeltaNetConfig = None
+# TransformerConfig = None
+# TransformerBlockConfig = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -362,7 +368,195 @@ class HybridSSMTransformerModel(nn.Module):
             logits=logits
         )
 
+
+class OLMoCoreCausalLMAdapter(nn.Module):
+    """Adapter to make an OLMo-core model compatible with HuggingFace Trainer output expectations."""
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+        # Keep compatibility with logging code that probes `model.wte.weight.std()`.
+        if hasattr(model, "embeddings"):
+            self.wte = model.embeddings
+
+    def forward(
+        self,
+        input_ids=None,
+        inputs_embeds=None,
+        labels=None,
+        position_ids=None,
+        **kwargs,
+    ):
+        del position_ids # OLMo-core does not use explicit absolute position IDs.
+
+        if inputs_embeds is not None:
+            raise ValueError("OLMo-core adapter does not support inputs_embeds; pass input_ids.")
+        if input_ids is None:
+            raise ValueError("You have to specify input_ids")
+
+        # HF Trainer can pass this, but OLMo-core forward does not use it.
+        kwargs.pop("attention_mask", None)
+
+        logits = self.model(
+            input_ids=input_ids,
+            return_logits=True,
+            **kwargs,
+        )
+        if labels is not None:
+            # Keep loss semantics identical to the local GPT-2/SSM paths:
+            # ForCausalLMLoss applies the autoregressive shift used by compute_metrics.
+            loss = ForCausalLMLoss(logits, labels, logits.size(-1))
+            return CausalLMOutput(loss=loss, logits=logits)
+
+        return CausalLMOutput(loss=None, logits=logits)
+
+
+def _require_olmo_core():
+    global TransformerConfig, AttentionConfig, GatedDeltaNetConfig, TransformerBlockConfig
+    if all(x is not None for x in (TransformerConfig, AttentionConfig, GatedDeltaNetConfig, TransformerBlockConfig)):
+        return
+
+    try:
+        TransformerConfig = importlib.import_module("olmo_core.nn.transformer").TransformerConfig
+        AttentionConfig = importlib.import_module("olmo_core.nn.attention").AttentionConfig
+        GatedDeltaNetConfig = importlib.import_module("olmo_core.nn.attention.recurrent").GatedDeltaNetConfig
+        TransformerBlockConfig = importlib.import_module("olmo_core.nn.transformer.config").TransformerBlockConfig
+    except ImportError as exc:
+        raise ImportError(
+            "OLMo-core is not available. Install `olmo-core` to use run_config.use_olmo_core=True. See this official repo for installation https://github.com/allenai/OLMo-core/blob/main/README.md. Installation needs to be done by cloning the official git repository and not the ai2-olmo-core package."
+        ) from exc
+
+
+def _olmo_head_dim(arch: ArchSlot, run_config: RunConfig) -> int:
+    raw_dim = run_config.olmo_gdn_head_dim_multiplier * (arch.d_model / arch.n_head)
+    head_dim = max(1, int(raw_dim))
+    if head_dim * arch.n_head > arch.d_model:
+        raise ValueError(
+            f"Invalid OLMo GDN head dim={head_dim} for d_model={arch.d_model}, n_head={arch.n_head}. "
+            f"Reduce olmo_gdn_head_dim_multiplier (currently {run_config.olmo_gdn_head_dim_multiplier})."
+        )
+    return head_dim
+
+
+def _build_olmo_base_transformer_config(
+    *,
+    vocab_size: int,
+    n_layers: int,
+    arch: ArchSlot,
+):
+    _require_olmo_core()
+    cfg = TransformerConfig.llama_like(
+        d_model=arch.d_model,
+        vocab_size=vocab_size,
+        n_layers=n_layers,
+        n_heads=arch.n_head,
+        n_kv_heads=arch.n_head,
+        use_flash=False,
+    )
+    assert isinstance(cfg.block, TransformerBlockConfig)
+    assert isinstance(cfg.block.sequence_mixer, AttentionConfig)
+    if arch.dropout:
+        cfg.block.dropout = arch.dropout
+    return cfg
+
+
+def _build_olmo_transformer_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+    cfg = _build_olmo_base_transformer_config(
+        vocab_size=len(tokenizer),
+        n_layers=arch.n_layer,
+        arch=arch,
+    )
+    if run_config.use_nope:
+        cfg.block = cfg.block.replace(
+            sequence_mixer=cfg.block.sequence_mixer.replace(rope=None)
+        )
+    model = cfg.build()
+    return OLMoCoreCausalLMAdapter(model)
+
+
+def _build_olmo_gdn_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+    cfg = _build_olmo_base_transformer_config(
+        vocab_size=len(tokenizer),
+        n_layers=arch.n_layer,
+        arch=arch,
+    )
+    gdn_cfg = GatedDeltaNetConfig(
+        n_heads=arch.n_head,
+        head_dim=_olmo_head_dim(arch, run_config),
+        expand_v=run_config.olmo_gdn_expand_v,
+        allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
+    )
+    cfg.block = cfg.block.replace(sequence_mixer=gdn_cfg)
+    model = cfg.build()
+    return OLMoCoreCausalLMAdapter(model)
+
+
+def _build_olmo_hybrid_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+    motif = run_config.hybrid_layer_pattern.strip().lower()
+    if not motif or any(c not in "as" for c in motif):
+        raise ValueError(
+            f"hybrid_layer_pattern must be non-empty and contain only 'a' and 's', got {run_config.hybrid_layer_pattern!r}"
+        )
+
+    # Keep the same semantics as existing hybrid: repeat the pattern `arch.n_layer` times.
+    pattern = list(motif) * arch.n_layer
+    cfg = _build_olmo_base_transformer_config(
+        vocab_size=len(tokenizer),
+        n_layers=len(pattern),
+        arch=arch,
+    )
+    if run_config.use_nope:
+        attn_block = cfg.block.replace(
+            sequence_mixer=cfg.block.sequence_mixer.replace(rope=None)
+        )
+    else:
+        attn_block = cfg.block
+    gdn_block = attn_block.replace(
+        sequence_mixer=GatedDeltaNetConfig(
+            n_heads=arch.n_head,
+            head_dim=_olmo_head_dim(arch, run_config),
+            expand_v=run_config.olmo_gdn_expand_v,
+            allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
+        )
+    )
+    cfg.block = {"attn": attn_block, "gdn": gdn_block}
+    cfg.block_pattern = ["attn" if c == "a" else "gdn" for c in pattern]
+
+    model = cfg.build()
+    return OLMoCoreCausalLMAdapter(model)
+
 def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int):
+    if run_config.use_olmo_core:
+        if arch.layer_norm is False:
+            raise ValueError("OLMo-core builders currently require layer_norm=True.")
+        if arch.between_block_mlp_layers != 1:
+            LOGGER.warning(
+                "OLMo-core feed-forward uses one block FFN; between_block_mlp_layers=%s is ignored.",
+                arch.between_block_mlp_layers,
+            )
+        if run_config.regularize != 0:
+            LOGGER.warning("regularize=%s is ignored for OLMo-core models.", run_config.regularize)
+
+        match run_config.model_family:
+            case "transformer":
+                LOGGER.info("Building OLMo-core transformer model")
+                return _build_olmo_transformer_model(run_config, arch, tokenizer)
+            case "ssm":
+                LOGGER.info(
+                    "Building OLMo-core standalone GDN model allow_neg_eigval=%s",
+                    run_config.olmo_gdn_allow_neg_eigval,
+                )
+                return _build_olmo_gdn_model(run_config, arch, tokenizer)
+            case "hybrid":
+                LOGGER.info(
+                    "Building OLMo-core hybrid model pattern=%s allow_neg_eigval=%s",
+                    run_config.hybrid_layer_pattern,
+                    run_config.olmo_gdn_allow_neg_eigval,
+                )
+                return _build_olmo_hybrid_model(run_config, arch, tokenizer)
+            case _:
+                raise ValueError(run_config.model_family)
+
     match run_config.model_family:
         case "transformer":
             cfg = create_transformer_config(tokenizer, n_positions, arch)

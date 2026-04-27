@@ -78,46 +78,62 @@ def format_log_prefix(
     step_k = max_steps / 1000.0
 
     ln_str = "ln" if arch.layer_norm else "noln"
+    pe = "nope" if run_config.use_nope else "pe"
+    reg = f"{run_config.regularize}reg"
+    btw_blocks = f"{arch.between_block_mlp_layers}mlp"
+    neg_eig = ""
+
+    if run_config.use_olmo_core:
+        reg = ""
+        btw_blocks = ""
+        ln_str = ""
+        pe = ""
+        neg_eig = "ne" if run_config.olmo_gdn_allow_neg_eigval else "none"
 
     parts: list[str] = []
 
     if run_config.model_family == "transformer":
-        pe = "nope" if run_config.use_nope else "pe"
+        arch_str = "lm" if not run_config.use_olmo_core else "olmolm"
         parts += [
-            "lm",
-            f"{run_config.regularize}reg",
+            arch_str,
+            reg,
             f"{arch.n_layer}l",
             f"{arch.n_head}h",
             f"{arch.d_model}d",
             f"{arch.dropout}",
-            f"{arch.between_block_mlp_layers}mlp",
-            f"{pe}",
-            f"{ln_str}",
+            btw_blocks,
+            pe,
+            ln_str,
         ]
     elif run_config.model_family == "ssm":
+        arch_str = "ssm" if not run_config.use_olmo_core else "olmo"
+        kernel_str = run_config.ssm_kernel if not run_config.use_olmo_core else "gdn"
         parts += [
-            "ssm",
-            f"{run_config.ssm_kernel}",
+            arch_str,
+            kernel_str,
             f"{arch.n_layer}l",
             f"{arch.d_model}d",
             f"{arch.dropout}dr",
-            f"{arch.between_block_mlp_layers}mlp",
-            f"{ln_str}",
+            btw_blocks,
+            neg_eig,
+            ln_str,
         ]
     else:
+        arch_str = "hyb" if not run_config.use_olmo_core else "olmohyb"
         pat = run_config.hybrid_layer_pattern
-        pe = "nope" if run_config.use_nope else "pe"
+        kernel_str = run_config.ssm_kernel if not run_config.use_olmo_core else ""
         parts += [
-            "hyb",
-            f"{pat}",
-            f"{run_config.ssm_kernel}",
+            arch_str,
+            kernel_str,
+            pat,
             f"{arch.n_layer}l",
             f"{arch.n_head}h",
             f"{arch.d_model}d",
             f"{arch.dropout}dr",
-            f"{arch.between_block_mlp_layers}mlp",
-            f"{pe}",
-            f"{ln_str}",
+            btw_blocks,
+            neg_eig,
+            pe,
+            ln_str,
         ]
     parts += [f"stp{step_k:.3g}k",
             f"{arch.lr}lr",

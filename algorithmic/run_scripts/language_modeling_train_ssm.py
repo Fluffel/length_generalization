@@ -22,6 +22,16 @@ if __name__ == "__main__":
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--warmup-steps", type=int, default=None)
     parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba"])
+    parser.add_argument(
+        "--use-olmo",
+        "--use_olmo",
+        action="store_true",
+        help=(
+            "Use OLMo-core GatedDeltaNet blocks for the SSM model family. "
+            "When enabled, --ssm-kernel is ignored (OLMo always uses GatedDeltaNet here), "
+            "and the local S4/Mamba implementation path is bypassed."
+        ),
+    )
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--key_size", type=int, default=32)
@@ -29,8 +39,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp)
-        for l in [2, 4]
-        for d in [16, 256]
+        for l in [1, 2, 4]
+        for d in [16, 64]
         for dr in [0, 0.1]
         for btwmlp in [2, 4]
         for lr in [1e-3]
@@ -41,6 +51,7 @@ if __name__ == "__main__":
     # rc.train_length_range = (0, 25)
     # rc.num_test_bins = 6
     rc.ssm_kernel = args.ssm_kernel
+    rc.use_olmo_core = args.use_olmo
     rc.save_final_weights = args.save_final_weights
     rc.task = args.task
     rc.seeds = args.seeds

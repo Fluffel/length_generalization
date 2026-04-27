@@ -17,6 +17,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
     parser.add_argument("--nope", action="store_true")
+    parser.add_argument(
+        "--use-olmo",
+        "--use_olmo",
+        action="store_true",
+        help=(
+            "Use OLMo-core transformer blocks. "
+            "When enabled, --regularize is ignored, OLMo's own positional scheme is used "
+            "(not GPT-2 absolute positional embeddings), and layer norm is always enabled."
+        ),
+    )
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
     parser.add_argument("--train-steps", type=int, default=None)
@@ -32,9 +42,9 @@ if __name__ == "__main__":
         ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp)
         for l in [2, 4]
         for h in [1, 2]
-        for d in [16, 64, 256]
+        for d in [16, 64]
         for btwmlp in [2]
-        for dr in [0, 0.1]
+        for dr in [0]
         for lr in [1e-3]
     ]
     
@@ -46,6 +56,7 @@ if __name__ == "__main__":
 
     rc.task = args.task
     rc.use_nope = args.nope
+    rc.use_olmo_core = args.use_olmo
     rc.regularize = args.regularize
     rc.seeds = args.seeds
     rc.job_id = args.job_id

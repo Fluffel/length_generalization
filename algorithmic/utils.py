@@ -132,6 +132,8 @@ class RunConfig:
     test_num: int = 2000
 
     use_nope: bool = False
+    # If true, use olmo_core TransformerConfig-backed builders instead of local GPT2/S4/Mamba ones.
+    use_olmo_core: bool = False
     
     # Transformer
     regularize: float = 0.0
@@ -141,6 +143,11 @@ class RunConfig:
 
     # SSM / hybrid SSM blocks
     ssm_kernel: str = "s4"
+    # OLMo GatedDeltaNet (used when use_olmo_core=True for ssm/hybrid).
+    olmo_gdn_allow_neg_eigval: bool = True
+    olmo_gdn_expand_v: float = 2.0
+    # Head dim is int(olmo_gdn_head_dim_multiplier * d_model / n_head)
+    olmo_gdn_head_dim_multiplier: float = 1.0
 
     # Step budgets
     max_steps_default: int = 30_000
