@@ -34,6 +34,29 @@ def _format_masked_label(label_tokens: list[str], pad_token: str) -> str:
     return " ".join(("·" if t == pad_token else t) for t in label_tokens)
 
 
+def _normalize_task_name(task: str) -> str:
+    """
+    Accept common formal task aliases and convert to internal names used by
+    algorithmic/dataset_generators_formal.py.
+    """
+    t = task.strip().lower().replace("-", "_")
+    aliases = {
+        "tomita1": "tomita_1",
+        "tomita2": "tomita_2",
+        "tomita3": "tomita_3",
+        "tomita4": "tomita_4",
+        "tomita5": "tomita_5",
+        "tomita6": "tomita_6",
+        "tomita7": "tomita_7",
+        "d2": "d_2",
+        "d3": "d_3",
+        "d4": "d_4",
+        "d12": "d_12",
+        "012star_0_2star": "012_star_0_2_star",
+    }
+    return aliases.get(t, t)
+
+
 @dataclass(frozen=True)
 class SampleView:
     input_ids: list[int]
@@ -129,6 +152,43 @@ def _load_dataset_class(name: str):
     return getattr(mod, name)
 
 
+def _load_dataset_class_from_module(module_name: str, class_name: str):
+    mod = _import_module_or_exit(module_name)
+    if not hasattr(mod, class_name):
+        raise SystemExit(f"Unknown dataset class `{class_name}` in {module_name}.")
+    return getattr(mod, class_name)
+
+
+def _load_build_datasets(module_name: str):
+    mod = _import_module_or_exit(module_name)
+    if not hasattr(mod, "build_datasets"):
+        raise SystemExit(f"Module {module_name} has no build_datasets().")
+    return getattr(mod, "build_datasets")
+
+
+def _import_module_or_exit(module_name: str):
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as e:
+        if e.name in {"torch", "numpy"}:
+            raise SystemExit(
+                f"Failed to import dependency `{e.name}` required by {module_name}.\n"
+                "Run this script in the project environment where dependencies are installed "
+                "(e.g. `uv pip install -e '.[all]'`)."
+            ) from e
+        raise
+
+
+def _make_run_config(*, task: str, train_range: tuple[int, int], num_test_bins: int, test_num: int):
+    utils = importlib.import_module("algorithmic.utils")
+    run_config = utils.default_transformer_sweep()
+    run_config.task = task
+    run_config.train_length_range = train_range
+    run_config.num_test_bins = num_test_bins
+    run_config.test_num = test_num
+    return run_config
+
+
 def _iter_samples(d: Any) -> Iterable[Any]:
     # IterableDataset: iter(d) works. Dataset: also works but may be finite.
     return iter(d)
@@ -137,14 +197,31 @@ def _iter_samples(d: Any) -> Iterable[Any]:
 def main() -> int:
     p = argparse.ArgumentParser(
         description=(
-            "Generate and print samples from datasets in algorithmic/dataset_generators.py "
-            "one-by-one for debugging."
+            "Generate and print samples from algorithmic datasets one-by-one for debugging. "
+            "Supports direct dataset classes and build_datasets(task)-based inspection."
         )
+    )
+    p.add_argument(
+        "--module",
+        default="algorithmic.dataset_generators",
+        help=(
+            "Python module containing dataset classes/build_datasets. "
+            "Use algorithmic.dataset_generators_formal for formal languages."
+        ),
+    )
+    p.add_argument(
+        "--mode",
+        choices=["class", "build"],
+        default="class",
+        help=(
+            "`class`: instantiate --dataset with --dataset-kwargs. "
+            "`build`: call build_datasets(run_config) and inspect the train/test streams."
+        ),
     )
     p.add_argument(
         "--dataset",
         default="MQARWordProblemDataset",
-        help="Dataset class name from algorithmic/dataset_generators.py",
+        help="Dataset class name for --mode class.",
     )
     # Accept both correct flag and common typo for convenience.
     p.add_argument(
@@ -161,6 +238,28 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=None, help="Seed python's RNG via random.seed().")
     p.add_argument("--show-ids", action="store_true", help="Print raw input_ids and labels.")
     p.add_argument("--show-pos", action="store_true", help="Print pos_ids.")
+    p.add_argument("--task", default="parity", help="Task name for --mode build.")
+    p.add_argument(
+        "--train-range",
+        default="[0,50]",
+        help="Train length range for --mode build. JSON list or Python tuple/list, e.g. [0,50].",
+    )
+    p.add_argument("--num-test-bins", type=int, default=3, help="Number of test bins for --mode build.")
+    p.add_argument("--test-num", type=int, default=2000, help="Examples per test bin in --mode build.")
+    p.add_argument(
+        "--split",
+        choices=["train", "test"],
+        default="train",
+        help="Which split to sample from in --mode build.",
+    )
+    p.add_argument(
+        "--test-bin",
+        default=None,
+        help=(
+            "Test bin key for --split test in --mode build "
+            '(e.g. "len0-49"). If omitted, first bin is used.'
+        ),
+    )
     p.add_argument(
         "--no-pause",
         action="store_true",
@@ -191,8 +290,60 @@ def main() -> int:
     if not isinstance(dataset_kwargs, dict):
         raise SystemExit(f"dataset kwargs must be a dict, got {type(dataset_kwargs).__name__}")
 
-    DatasetCls = _load_dataset_class(args.dataset)
-    d = DatasetCls(**dataset_kwargs)
+    # Make `import algorithmic...` work even when running this script directly.
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    if args.mode == "class":
+        if args.module == "algorithmic.dataset_generators":
+            DatasetCls = _load_dataset_class(args.dataset)
+        else:
+            DatasetCls = _load_dataset_class_from_module(args.module, args.dataset)
+        d = DatasetCls(**dataset_kwargs)
+    else:
+        raw_train_range = args.train_range
+        try:
+            train_range_val = json.loads(raw_train_range)
+        except json.JSONDecodeError:
+            try:
+                train_range_val = ast.literal_eval(raw_train_range)
+            except Exception as e:
+                raise SystemExit(
+                    "Failed to parse --train-range.\n"
+                    "Pass JSON/Python list or tuple, e.g. [0,50] or (0,50).\n"
+                    f"Got: {raw_train_range!r}\n"
+                    f"Parse error: {e}"
+                ) from e
+        if not isinstance(train_range_val, (list, tuple)) or len(train_range_val) != 2:
+            raise SystemExit(f"--train-range must be length-2 list/tuple, got: {train_range_val!r}")
+        train_range = (int(train_range_val[0]), int(train_range_val[1]))
+
+        task = _normalize_task_name(args.task)
+        build_datasets = _load_build_datasets(args.module)
+        run_config = _make_run_config(
+            task=task,
+            train_range=train_range,
+            num_test_bins=args.num_test_bins,
+            test_num=args.test_num,
+        )
+        train_dataset, test_dataset, _, _ = build_datasets(run_config)
+
+        if args.split == "train":
+            d = train_dataset
+            print(f"[build mode] module={args.module} task={task} split=train")
+        else:
+            if not test_dataset:
+                raise SystemExit("Test dataset dict is empty.")
+            if args.test_bin is None:
+                bin_key = next(iter(test_dataset.keys()))
+            else:
+                bin_key = args.test_bin
+                if bin_key not in test_dataset:
+                    available = ", ".join(test_dataset.keys())
+                    raise SystemExit(f"Unknown --test-bin {bin_key!r}. Available: {available}")
+            d = test_dataset[bin_key]
+            print(f"[build mode] module={args.module} task={task} split=test bin={bin_key}")
 
     it = _iter_samples(d)
     for i in range(args.num):
