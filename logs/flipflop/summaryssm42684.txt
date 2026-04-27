@@ -1,0 +1,15 @@
+ssms42l16d0dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.9995		eval_len50-99_acc: 0.989		eval_len100-149_acc: 0.982		lr: 0.001
+ssms42l16d0dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.998		eval_len50-99_acc: 0.964		eval_len100-149_acc: 0.901		lr: 0.001
+ssms42l16d0.1dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.9935		eval_len50-99_acc: 0.993		eval_len100-149_acc: 0.99		lr: 0.001
+ssms42l16d0.1dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.9925		eval_len50-99_acc: 0.9765		eval_len100-149_acc: 0.9545		lr: 0.001
+ssms42l256d0dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.997		eval_len100-149_acc: 0.998		lr: 0.001
+ssms42l256d0dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.999		eval_len100-149_acc: 0.997		lr: 0.001
+ssms42l256d0.1dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.9995		eval_len100-149_acc: 0.9945		lr: 0.001
+ssms42l256d0.1dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.999		eval_len100-149_acc: 0.9985		lr: 0.001
+ssms44l16d0dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.9785		eval_len100-149_acc: 0.9815		lr: 0.001
+ssms44l16d0dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.9985		eval_len100-149_acc: 0.995		lr: 0.001
+ssms44l16d0.1dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.9995		eval_len100-149_acc: 0.9995		lr: 0.001
+ssms44l16d0.1dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 0.9995		eval_len100-149_acc: 0.997		lr: 0.001
+ssms44l256d0dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 1.0		eval_len100-149_acc: 0.9995		lr: 0.001
+ssms44l256d0dr4mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 1.0		eval_len100-149_acc: 1.0		lr: 0.001
+ssms44l256d0.1dr2mlplnstp30k0.001lr	reach max step			eval_len0-49_acc: 1.0		eval_len50-99_acc: 1.0		eval_len100-149_acc: 1.0		lr: 0.001

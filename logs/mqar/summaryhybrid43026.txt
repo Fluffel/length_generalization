@@ -1,0 +1,6 @@
+hybsaamamba1l1h64d0dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5985		eval_len50-99_acc: 0.5015		eval_len100-149_acc: 0.51		lr: 0.001
+hybsaamamba1l1h64d0.1dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5985		eval_len50-99_acc: 0.5055		eval_len100-149_acc: 0.5125		lr: 0.001
+hybsaamamba1l1h256d0dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5935		eval_len50-99_acc: 0.5175		eval_len100-149_acc: 0.489		lr: 0.001
+hybsaamamba1l1h256d0.1dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5855		eval_len50-99_acc: 0.502		eval_len100-149_acc: 0.4875		lr: 0.001
+hybsaamamba1l2h64d0dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.5835		eval_len50-99_acc: 0.5115		eval_len100-149_acc: 0.512		lr: 0.001
+hybsaamamba1l2h64d0.1dr2mlppelnstp30k0.001lr	reach max step			eval_len0-49_acc: 0.597		eval_len50-99_acc: 0.495		eval_len100-149_acc: 0.502		lr: 0.001
