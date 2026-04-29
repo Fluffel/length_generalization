@@ -10,6 +10,12 @@ split into separate plotted series whenever their ``(model, learning_rate)``
 datapoints disagree on the *set* of bucket columns they cover.  That way a
 group never mixes configurations that were evaluated on different bins; each
 line only pools datapoints that share identical bin coverage.
+
+If the CSV lists the same ``(model, learning_rate, bucket)`` more than once
+(e.g. repeated summary lines or runs), those rows are collapsed to a single
+value: the **maximum** accuracy, before any plotting or max-envelope logic.
+
+With ``--x-ticks bins``, x is ordinal (shortest train span first); ticks are labeled ``bin1``, ``bin2``, … .
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ import argparse
 import math
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from statistics import mean
 
@@ -41,6 +48,19 @@ def _sample_std(values: list[float]) -> float:
     mu = mean(values)
     var = sum((v - mu) ** 2 for v in values) / (n - 1)
     return math.sqrt(var)
+
+
+def _collapse_identical_datapoint_buckets(
+    dcv: dict[tuple[str, float, str], list[float]],
+) -> None:
+    """In-place: one value per ``(model, learning_rate, bucket)`` — keep max accuracy."""
+    for key in list(dcv.keys()):
+        vals = dcv[key]
+        if not vals:
+            del dcv[key]
+        else:
+            m = max(vals)
+            dcv[key] = [m]
 
 
 _BUCKET_BOUNDS_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
@@ -77,6 +97,28 @@ def _bucket_sort_key_plot(bucket: str) -> tuple[int, str]:
 def _bucket_plot_x(bucket: str) -> float | None:
     u = _bucket_upper_bound(bucket)
     return float(u) if u is not None else None
+
+
+def _ordinal_bin_tick_labels(
+    sub_keys: list[tuple[str, frozenset[str]]],
+    series_buckets: Callable[[tuple[str, frozenset[str]]], list[str]],
+) -> list[str]:
+    """``bin1``, ``bin2``, … for each ordinal bin (shortest train span first per series)."""
+    if not sub_keys:
+        return []
+    max_k = max(len(series_buckets(sk)) for sk in sub_keys)
+    return [f"bin{i + 1}" for i in range(max_k)]
+
+
+def _filter_rows_by_num_bins(
+    rows: list[dict[str, str]], num_bins: int
+) -> list[dict[str, str]]:
+    """Keep rows whose (model, learning_rate) pair has exactly ``num_bins`` distinct buckets."""
+    buckets_by_dp: dict[tuple[str, float], set[str]] = defaultdict(set)
+    for r in rows:
+        buckets_by_dp[(r["model"], float(r["learning_rate"]))].add(r["bucket"])
+    keep = {dp for dp, bs in buckets_by_dp.items() if len(bs) == num_bins}
+    return [r for r in rows if (r["model"], float(r["learning_rate"])) in keep]
 
 
 def _buckets_for_datapoint(
@@ -613,6 +655,7 @@ def plot_task(
     x_ticks_mode: str,
     x_tick_step: int,
     x_axis_break: str | None = None,
+    num_bins: int | None = None,
 ) -> None:
     try:
         import matplotlib as mpl
@@ -634,16 +677,27 @@ def plot_task(
         remove_patterns=remove_patterns,
     )
     print(f"Filtered rows: {len(filtered_rows)}")
+    if num_bins is not None:
+        before_nb = len(filtered_rows)
+        filtered_rows = _filter_rows_by_num_bins(filtered_rows, num_bins)
+        print(
+            f"After --num-bins={num_bins}: {len(filtered_rows)} rows "
+            f"(dropped configurations with other distinct-bucket counts; had {before_nb})."
+        )
     if not filtered_rows:
         raise SystemExit(
             f"No rows to plot for task '{task}'. "
-            "Check --task, --include-pattern, and --remove-pattern."
+            "Check --task, --include-pattern, --remove-pattern, and --num-bins."
         )
+
+    if x_ticks_mode == "bins" and x_axis_break is not None and str(x_axis_break).strip():
+        raise SystemExit("--x-axis-break is incompatible with --x-ticks bins.")
 
     datapoint_bucket_vals: dict[tuple[str, float, str], list[float]] = defaultdict(list)
     for row in filtered_rows:
         key = (row["model"], float(row["learning_rate"]), row["bucket"])
         datapoint_bucket_vals[key].append(float(row["accuracy"]))
+    _collapse_identical_datapoint_buckets(datapoint_bucket_vals)
 
     explicit_patterns = [p for p in group_patterns if p.strip() and p.strip() != "*"]
     wildcard_rest = any(p.strip() == "*" for p in group_patterns)
@@ -688,10 +742,17 @@ def plot_task(
     series_to_datapoints: dict[tuple[str, frozenset[str]], set[tuple[str, float]]] = defaultdict(set)
 
     for sk in sub_keys:
+        seen_dp_bucket: set[tuple[tuple[str, float], str]] = set()
         for row in sub_series_rows[sk]:
             dp = (row["model"], float(row["learning_rate"]))
             series_to_datapoints[sk].add(dp)
-            series_to_bucket_vals[(sk, row["bucket"])].append(float(row["accuracy"]))
+            b = row["bucket"]
+            if (dp, b) in seen_dp_bucket:
+                continue
+            seen_dp_bucket.add((dp, b))
+            collapsed = datapoint_bucket_vals.get((dp[0], dp[1], b), [])
+            if collapsed:
+                series_to_bucket_vals[(sk, b)].append(collapsed[0])
 
     all_bucket_names = {r["bucket"] for r in filtered_rows}
     x_tick_ends = sorted(
@@ -707,6 +768,22 @@ def plot_task(
             {b for (k, b) in series_to_bucket_vals if k == sk},
             key=_bucket_sort_key_plot,
         )
+
+    use_bins = x_ticks_mode == "bins"
+
+    def bucket_x(sk: tuple[str, frozenset[str]], b: str) -> float | None:
+        if use_bins:
+            return float(series_buckets(sk).index(b))
+        return _bucket_plot_x(b)
+
+    ordinal_tick_labels: list[str]
+    num_ordinal_bins: int
+    if use_bins:
+        ordinal_tick_labels = _ordinal_bin_tick_labels(sub_keys, series_buckets)
+        num_ordinal_bins = len(ordinal_tick_labels)
+    else:
+        ordinal_tick_labels = []
+        num_ordinal_bins = 0
 
     max_series: dict[tuple[str, frozenset[str]], tuple[str, list[float], list[float], list[float]]] = {}
     if include_max or include_max_only:
@@ -736,24 +813,30 @@ def plot_task(
                 datapoint_bucket_vals,
                 fallback_dps=datapoints,
             )
+            if use_bins:
+                mx = [float(i) for i in range(len(mx))]
             max_series[sk] = (max_label, mx, mmean, mstd)
 
     x_max_data = float(max(x_tick_ends))
-    for sk in sub_keys:
-        for b in series_buckets(sk):
-            if (x_b := _bucket_plot_x(b)) is not None:
-                x_max_data = max(x_max_data, x_b)
-    for _lbl, mx_pts, _, _ in max_series.values():
-        if mx_pts:
-            x_max_data = max(x_max_data, max(mx_pts))
+    if use_bins:
+        x_max_data = float(max(0, num_ordinal_bins - 1))
+    else:
+        for sk in sub_keys:
+            for b in series_buckets(sk):
+                if (x_b := _bucket_plot_x(b)) is not None:
+                    x_max_data = max(x_max_data, float(x_b))
+        for _lbl, mx_pts, _, _ in max_series.values():
+            if mx_pts:
+                x_max_data = max(x_max_data, max(mx_pts))
 
     all_plotted_x: list[float] = []
     for sk in sub_keys:
         for b in series_buckets(sk):
-            if (xb := _bucket_plot_x(b)) is not None:
+            if (xb := bucket_x(sk, b)) is not None:
                 all_plotted_x.append(float(xb))
     for _lbl, mx, _, _ in max_series.values():
         all_plotted_x.extend(float(x) for x in mx)
+
     min_plotted_x = min(all_plotted_x) if all_plotted_x else 0.0
 
     shrink_to = _parse_x_axis_shrink(x_axis_break, min_plotted_x)
@@ -763,8 +846,12 @@ def plot_task(
             return x
         return _x_data_to_plot_shrink(x, min_plotted_x, shrink_to)
 
-    pad = max(x_max_data * 0.02, 1.0)
-    x_hi_data = x_max_data + pad
+    if use_bins:
+        pad = max(0.08 * max(x_max_data + 1.0, 1.0), 0.42)
+        x_hi_data = x_max_data + pad
+    else:
+        pad = max(x_max_data * 0.02, 1.0)
+        x_hi_data = x_max_data + pad
     x_hi_plot = xplt(x_hi_data)
 
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -779,7 +866,7 @@ def plot_task(
             means: list[float] = []
             stds: list[float] = []
             for b in buckets_sl:
-                x = _bucket_plot_x(b)
+                x = bucket_x(sk, b)
                 if x is None:
                     continue
                 vals = series_to_bucket_vals.get((sk, b), [])
@@ -831,13 +918,21 @@ def plot_task(
             label=max_label,
         )
 
-    ax.set_xlim(0.0, x_hi_plot)
+    if use_bins:
+        lx = float(min(all_plotted_x)) if all_plotted_x else 0.0
+        rx = float(max(all_plotted_x)) if all_plotted_x else float(x_hi_plot)
+        ax.set_xlim(lx - 0.55, max(float(x_hi_plot), rx + 0.55))
+    else:
+        ax.set_xlim(0.0, x_hi_plot)
 
     if shrink_to is None:
-        if x_ticks_mode == "ends":
+        if use_bins:
+            ax.set_xticks([float(i) for i in range(num_ordinal_bins)])
+            ax.set_xticklabels(ordinal_tick_labels if ordinal_tick_labels else [""])
+        elif x_ticks_mode == "ends":
             ax.set_xticks([float(e) for e in x_tick_ends])
             ax.set_xticklabels([f"<{e}" for e in x_tick_ends])
-        else:
+        elif x_ticks_mode == "regular":
             step = max(int(x_tick_step), 1)
             hi = int(math.ceil(x_hi_data / step) * step)
             reg_ticks = [float(x) for x in range(0, hi + 1, step)]
@@ -846,7 +941,10 @@ def plot_task(
                 [str(int(t)) if t == int(t) else str(t) for t in reg_ticks]
             )
     else:
-        if x_ticks_mode == "ends":
+        if use_bins:
+            ax.set_xticks([float(i) for i in range(num_ordinal_bins)])
+            ax.set_xticklabels(ordinal_tick_labels if ordinal_tick_labels else [""])
+        elif x_ticks_mode == "ends":
             tick_data = sorted({float(e) for e in x_tick_ends})
             if not tick_data:
                 tick_data = [0.0]
@@ -856,7 +954,7 @@ def plot_task(
             labels = ["0" if t <= 0 else f"<{int(t)}" for t in tick_data]
             ax.set_xticks(tick_plot)
             ax.set_xticklabels(labels)
-        else:
+        elif x_ticks_mode == "regular":
             step = max(int(x_tick_step), 1)
             hi_d = int(math.ceil(x_hi_data / step) * step)
             reg_data = [float(x) for x in range(0, hi_d + 1, step)]
@@ -868,7 +966,11 @@ def plot_task(
 
         _draw_x_shrink_marks(ax, shrink_to, x_hi_plot)
 
-    ax.set_xlabel("Validation length (upper bound)")
+    ax.set_xlabel(
+        "Validation bin"
+        if use_bins
+        else "Validation length (upper bound)"
+    )
     ax.set_ylabel("Accuracy (%)")
     ax.set_ylim(-10.0, 110.0)
     ax.grid(alpha=0.3)
@@ -941,6 +1043,16 @@ def main() -> int:
         help="Legend placement (or 'none' to hide).",
     )
     parser.add_argument(
+        "--num-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Keep only rows whose model+learning-rate has exactly N distinct buckets; "
+            "drop rows for configurations with any other bucket count."
+        ),
+    )
+    parser.add_argument(
         "--remove-pattern",
         action="append",
         default=[],
@@ -964,9 +1076,14 @@ def main() -> int:
     parser.add_argument(
         "--x-ticks",
         dest="x_ticks_mode",
-        choices=("ends", "regular"),
+        choices=("ends", "regular", "bins"),
         default="ends",
-        help="ends: tick at each bin upper bound with <N> labels (default).",
+        help=(
+            "ends: tick at each bin upper bound with <N> labels (default). "
+            "regular: numeric axis with --x-tick-step. "
+            "bins: ordinal bins (0,1,…); models with the same number of bins align even if "
+            "numeric ranges differ slightly."
+        ),
     )
     parser.add_argument(
         "--x-tick-step",
@@ -1003,6 +1120,8 @@ def main() -> int:
         raise SystemExit("--task is required.")
     if args.x_tick_step < 1:
         raise SystemExit("--x-tick-step must be >= 1.")
+    if args.num_bins is not None and args.num_bins < 1:
+        raise SystemExit("--num-bins must be >= 1.")
 
     rows = load_csv_rows(args.input_csv)
     if not rows:
@@ -1027,6 +1146,7 @@ def main() -> int:
         x_ticks_mode=args.x_ticks_mode,
         x_tick_step=args.x_tick_step,
         x_axis_break=args.x_axis_break,
+        num_bins=args.num_bins,
     )
     print(f"Wrote plot: {plot_path}")
     return 0

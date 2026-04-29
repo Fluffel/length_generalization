@@ -121,9 +121,14 @@ def parse_model_spec(model: str) -> dict[str, str]:
         arch += "hyb"
     elif "lm" in pure_alpha:
         arch += "lm"
-    else: # olmo uses gdn, which is also ssm
+    elif "ssm" in pure_alpha or "gdn" in pure_alpha:
         arch += "ssm"
-
+    # elif arch.startswith("olmo"):
+    #     # ``olmo`` alone (no explicit ``lm`` / ``hyb`` / ``ssm``): OLMo SSM-backed stack → gdn.
+    #     arch += "ssm"
+    else:
+        # Structure-only specs like ``2l1h64d`` omit an arch keyword; default to LM.
+        arch += "lm"
 
     # ── SSM kernel ───────────────────────────────────────────────────────────
     # Kernels are matched as whole tokens (KNOWN_KERNELS), so we just look for
@@ -244,7 +249,7 @@ def build_or_update_csv(
 ) -> list[dict[str, str]]:
     existing_rows = load_csv_rows(csv_path)
 
-    seen_keys = set()
+    # seen_keys = set()
     merged_rows: list[dict[str, str | int | float]] = []
 
     for row in existing_rows:
@@ -255,9 +260,9 @@ def build_or_update_csv(
             float(row["learning_rate"]),
             row["task"],
         )
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
+        # if key in seen_keys:
+        #     continue
+        # seen_keys.add(key)
         # Build a base row with defaults for any columns absent in older CSV
         # files, then overwrite spec columns by re-parsing the model string so
         # that spec columns are always up-to-date even when loading a legacy CSV.
@@ -283,9 +288,9 @@ def build_or_update_csv(
                         float(row["learning_rate"]),
                         str(row["task"]),
                     )
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
+                    # if key in seen_keys:
+                    #     continue
+                    # seen_keys.add(key)
                     merged_rows.append(row)
 
     if bucket_end_digits:
