@@ -29,7 +29,22 @@ ARCHITECTURES = ["lm", "hyb", "ssm", "olmo"]
 # split by any letter or digit pattern in the tokeniser regex.
 _KERNEL_SLOT_RE = re.compile(r"\x01(\d+)\x01")
 
-DEAFAULT_FEATURE_ORDER = ["l", "h", "d", "dr"] # Included as some logs are accidentally missing some features
+# ``s4`` / ``s6`` appear as *substrings* of ``[as]+`` + ``<n>l`` (e.g. ``aaas4l``:
+# last ``s`` of the motif plus the first digit of ``4l``).  Those must not be
+# pre-extracted as SSM kernels (real modular / legacy names never place a
+# kernel literal between ``hyb`` and ``<n>l``).
+_S4_S6_FALSE_KERNEL_RE = re.compile(r"\d*l")
+
+
+def _sdigit_kernel_is_layer_count_suffix(s: str, pos: int, kernel: str) -> bool:
+    if kernel not in frozenset({"s4", "s6"}):
+        return False
+    if pos == 0 or s[pos - 1] not in "as":
+        return False
+    return _S4_S6_FALSE_KERNEL_RE.match(s[pos + len(kernel) :]) is not None
+
+
+DEAFAULT_FEATURE_ORDER = ["l", "h", "d", "dr"]  # Some logs omit features; use position fallback.
 
 # Tokenizer for model strings.  Order matters: more specific / longer patterns
 # must come before more general ones.
@@ -348,6 +363,9 @@ def tokenize_model(model: str) -> list[str]:
     for kernel in sorted(KNOWN_KERNELS, key=len, reverse=True):
         i = 0
         while (pos := s.find(kernel, i)) != -1:
+            if _sdigit_kernel_is_layer_count_suffix(s, pos, kernel):
+                i = pos + 1
+                continue
             placeholder = f"\x01{len(slots)}\x01"
             slots.append(kernel)
             s = s[:pos] + placeholder + s[pos + len(kernel):]
