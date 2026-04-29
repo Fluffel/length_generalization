@@ -33,17 +33,23 @@ if __name__ == "__main__":
     parser.add_argument("--hybrid-layer-pattern", type=str, default="sa")
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--warmup-steps", type=int, default=None)
+    parser.add_argument("--logging-steps", type=int, default=None)
+    parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--noln", action="store_true", help="Disable layer norm")
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--key_size", type=int, default=32)
     parser.add_argument("--query_fraction", type=float, default=0.2)
+    parser.add_argument("--report-to", type=str, default="wandb", choices=["none", "wandb"])
+    parser.add_argument("--wandb-project", type=str, default=None)
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-group", type=str, default=None)
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=not args.noln)
         for l in [1, 2, 4]
-        for h in [1, 2]
+        for h in [1, 2, 4]
         for d in [16, 64]
         for dr in [0, 0.1]
         for lr in [1e-3]
@@ -62,6 +68,10 @@ if __name__ == "__main__":
     rc.monoid_n = args.monoid_n
     rc.key_size = args.key_size
     rc.query_fraction = args.query_fraction
+    rc.report_to = args.report_to
+    rc.wandb_project = args.wandb_project
+    rc.wandb_entity = args.wandb_entity
+    rc.wandb_group = args.wandb_group
 
     if args.train_steps is not None:
         rc.max_steps_default = args.train_steps
@@ -69,6 +79,10 @@ if __name__ == "__main__":
     if args.warmup_steps is not None:
         rc.warmup_default = args.warmup_steps
         rc.warmup_large = args.warmup_steps
+    if args.logging_steps is not None:
+        rc.logging_steps = args.logging_steps
+    if args.eval_steps is not None:
+        rc.eval_steps = args.eval_steps
     
     rc.save_final_weights = args.save_final_weights
     rc.job_id = args.job_id

@@ -167,6 +167,9 @@ class RunConfig:
     log_dir: str = "./logs"
     summary_basename: str = "summary.txt"
     report_to: str = "none"
+    wandb_project: Optional[str] = None
+    wandb_entity: Optional[str] = None
+    wandb_group: Optional[str] = None
 
     save_final_weights: bool = False
     print_example_sequences: int = 3
