@@ -21,6 +21,7 @@ from pathlib import Path
 from statistics import mean
 
 from generate_summary_csv import (
+    MODEL_SPEC_COLUMNS,
     filter_rows,
     load_csv_rows,
     parse_model_spec,
@@ -235,14 +236,28 @@ def max_line_xy_for_winners(
 _NUM_SUFFIX_RE = re.compile(r"^(.+)(l|h|d|dr|mlp)$")
 
 
+def _spec_for_legend(row: dict[str, str]) -> dict[str, str]:
+    """Model spec from the model string, with CSV cells filling any ``-`` holes."""
+    spec: dict[str, str] = dict(parse_model_spec(row.get("model", "")))
+    for key in MODEL_SPEC_COLUMNS:
+        v = spec.get(key, "-")
+        if v not in ("-", "", None):
+            continue
+        rv = row.get(key)
+        if rv is None or rv == "" or rv == "-":
+            continue
+        spec[key] = str(rv).strip()
+    return spec
+
+
 def _spec_keyed_parts(row: dict[str, str]) -> list[tuple[str, str]]:
     """Ordered (key, fragment) pairs matching :func:`compact_spec_label_from_row` order."""
-    spec = parse_model_spec(row.get("model", ""))
+    spec = _spec_for_legend(row)
     out: list[tuple[str, str]] = []
     arch = spec.get("arch", "-")
     if arch != "-":
         out.append(("arch", arch))
-    if arch == "hyb":
+    if "hyb" in arch:
         lo = spec.get("layer_order", "-")
         if lo not in ("-", ""):
             out.append(("layer_order", lo))
@@ -274,6 +289,11 @@ def _spec_keyed_parts(row: dict[str, str]) -> list[tuple[str, str]]:
         out.append(("ln", "ln"))
     elif ln == "False":
         out.append(("ln", "noln"))
+    ne = spec.get("ne", "-")
+    if ne == "True":
+        out.append(("ne", "ne"))
+    elif ne == "False":
+        out.append(("ne", "none"))
     stp = spec.get("train_steps_k", "-")
     if stp not in ("-", ""):
         out.append(("train_steps_k", f"stp{stp}k"))
@@ -285,7 +305,25 @@ def _spec_keyed_parts(row: dict[str, str]) -> list[tuple[str, str]]:
     return out
 
 
-def _merge_fragments_for_key(key: str, frags: set[str]) -> str:
+# Order matches :func:`_spec_keyed_parts` emission order.
+_KEY_ORDER_LEGEND: tuple[str, ...] = (
+    "arch",
+    "layer_order",
+    "kernel",
+    "layers",
+    "heads",
+    "d_model",
+    "dropout",
+    "mlp_size",
+    "pe",
+    "ln",
+    "ne",
+    "train_steps_k",
+    "lr",
+)
+
+
+def _merge_fragments_for_key(key: str, frags: set[str], *, alt_sep: str = "/") -> str:
     if len(frags) == 1:
         return next(iter(frags))
     if key == "lr":
@@ -310,7 +348,7 @@ def _merge_fragments_for_key(key: str, frags: set[str]) -> str:
     if len(m_groups) == 1 and not unmerged:
         sfx, nums = next(iter(m_groups.items()))
         return "/".join(sorted(nums, key=_numeric_sort_key)) + sfx
-    return "/".join(sorted(frags))
+    return alt_sep.join(sorted(frags))
 
 
 def _is_float_str(s: str) -> bool:
@@ -329,39 +367,39 @@ def _numeric_sort_key(s: str) -> tuple[int, float | str]:
 
 
 def _legend_label_merged(rows: list[dict[str, str]]) -> str:
-    """One legend entry per series: shared spec prefix once, varying fields like ``1/4l``."""
+    """One legend entry: same layout as a single spec; ``|`` only joins differing fragments per field."""
     if not rows:
         return ""
     reps: dict[tuple[str, float], dict[str, str]] = {}
     for r in rows:
         dp = (r["model"], float(r["learning_rate"]))
         reps[dp] = r
-    keyed_lists = [_spec_keyed_parts(r) for r in reps.values()]
-    key_sets = {frozenset(k for k, _ in kl) for kl in keyed_lists}
-    if len(key_sets) > 1:
-        labels = sorted({compact_spec_label_from_row(r) for r in reps.values()})
-        return " | ".join(labels)
-    key_order = [k for k, _ in keyed_lists[0]]
+    keyed_dicts = [dict(_spec_keyed_parts(r)) for r in reps.values()]
+    all_keys: set[str] = set()
+    for d in keyed_dicts:
+        all_keys |= d.keys()
+    key_order = [k for k in _KEY_ORDER_LEGEND if k in all_keys]
+    key_order.extend(sorted(all_keys - set(key_order)))
     by_key: dict[str, set[str]] = defaultdict(set)
-    for kl in keyed_lists:
-        for k, frag in kl:
+    for d in keyed_dicts:
+        for k, frag in d.items():
             by_key[k].add(frag)
     out_parts: list[str] = []
     for k in key_order:
         frags = by_key[k]
         if not frags:
             continue
-        out_parts.append(_merge_fragments_for_key(k, frags))
+        out_parts.append(_merge_fragments_for_key(k, frags, alt_sep="|"))
     return "".join(out_parts)
 
 
 def compact_spec_label_from_row(row: dict[str, str]) -> str:
-    spec = parse_model_spec(row.get("model", ""))
+    spec = _spec_for_legend(row)
     parts: list[str] = []
     arch = spec.get("arch", "-")
     if arch != "-":
         parts.append(arch)
-    if arch == "hyb":
+    if "hyb" in arch:
         lo = spec.get("layer_order", "-")
         if lo not in ("-", ""):
             parts.append(lo)
@@ -393,6 +431,11 @@ def compact_spec_label_from_row(row: dict[str, str]) -> str:
         parts.append("ln")
     elif ln == "False":
         parts.append("noln")
+    ne = spec.get("ne", "-")
+    if ne == "True":
+        parts.append("ne")
+    elif ne == "False":
+        parts.append("none")
     stp = spec.get("train_steps_k", "-")
     if stp not in ("-", ""):
         parts.append("stp")
@@ -485,6 +528,76 @@ def _signature_label(signature: frozenset[str]) -> str:
     return ",".join(parts)
 
 
+def _parse_x_axis_shrink(
+    raw: str | None,
+    x_min_data: float,
+) -> float | None:
+    """Return plot-space length for compressing [0, x_min_data); first point lands here.
+
+    ``--x-axis-break 5`` maps data ``0 .. x_min_data`` linearly onto plot ``0 .. 5``,
+    then continues with unit slope. ``auto`` uses 5.
+    """
+    if raw is None or not str(raw).strip():
+        return None
+    s = str(raw).strip().lower()
+    if s == "auto":
+        val = 5.0
+    else:
+        try:
+            val = float(s)
+        except ValueError:
+            raise SystemExit(
+                f"--x-axis-break: invalid value {raw!r} (use a positive number or 'auto')."
+            ) from None
+    if val <= 0 or not math.isfinite(val):
+        return None
+    if x_min_data <= 0 or not math.isfinite(x_min_data):
+        return None
+    return val
+
+
+def _x_data_to_plot_shrink(x: float, x_min_data: float, shrink: float) -> float:
+    if x <= x_min_data:
+        return (x / x_min_data) * shrink
+    return shrink + (x - x_min_data)
+
+
+def _draw_x_shrink_marks(ax, br_plot: float, x_extent: float) -> None:
+    """Draw two tight // pairs near the middle of ``[0, br_plot]`` (compressed region before first point)."""
+    from matplotlib.transforms import blended_transform_factory
+
+    if br_plot <= 0:
+        return
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    d = 0.015
+    # Slash width from compressed segment, not full axis (avoids huge diagonals on long x-axes).
+    dx_slash = max(br_plot * 0.10, min(0.45, x_extent * 0.004))
+    kwargs: dict = dict(transform=trans, color="k", clip_on=False, linewidth=0.9, zorder=10)
+
+    center = 0.5 * br_plot
+    pair_gap = max(br_plot * 0.06, 0.12)
+    cx_lo = center - 0.5 * pair_gap
+    cx_hi = center + 0.5 * pair_gap
+    margin = dx_slash * 1.15
+    if cx_lo < margin:
+        shift = margin - cx_lo
+        cx_lo += shift
+        cx_hi += shift
+    if cx_hi > br_plot - margin:
+        shift = cx_hi - (br_plot - margin)
+        cx_lo -= shift
+        cx_hi -= shift
+    cx_lo = max(cx_lo, margin)
+    cx_hi = min(cx_hi, br_plot - margin)
+    if cx_hi - cx_lo < 0.25 * pair_gap:
+        cx_lo = max(margin, center - 0.4 * pair_gap)
+        cx_hi = min(br_plot - margin, center + 0.4 * pair_gap)
+
+    for cx in (cx_lo, cx_hi):
+        ax.plot((cx - dx_slash, cx + dx_slash), (-d, +d), **kwargs)
+        ax.plot((cx - dx_slash, cx + dx_slash), (1 - d, 1 + d), **kwargs)
+
+
 def plot_task(
     rows: list[dict[str, str]],
     task: str,
@@ -499,6 +612,7 @@ def plot_task(
     *,
     x_ticks_mode: str,
     x_tick_step: int,
+    x_axis_break: str | None = None,
 ) -> None:
     try:
         import matplotlib as mpl
@@ -633,19 +747,28 @@ def plot_task(
         if mx_pts:
             x_max_data = max(x_max_data, max(mx_pts))
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    all_plotted_x: list[float] = []
+    for sk in sub_keys:
+        for b in series_buckets(sk):
+            if (xb := _bucket_plot_x(b)) is not None:
+                all_plotted_x.append(float(xb))
+    for _lbl, mx, _, _ in max_series.values():
+        all_plotted_x.extend(float(x) for x in mx)
+    min_plotted_x = min(all_plotted_x) if all_plotted_x else 0.0
 
-    if x_ticks_mode == "ends":
-        x_ticks = [float(e) for e in x_tick_ends]
-        x_labels = [f"<{e}" for e in x_tick_ends]
-        ax.set_xticks(x_ticks)
-        ax.set_xticklabels(x_labels)
-    else:
-        step = max(int(x_tick_step), 1)
-        hi = int(math.ceil(x_max_data / step) * step)
-        reg_ticks = [float(x) for x in range(0, hi + 1, step)]
-        ax.set_xticks(reg_ticks)
-        ax.set_xticklabels([str(int(t)) if t == int(t) else str(t) for t in reg_ticks])
+    shrink_to = _parse_x_axis_shrink(x_axis_break, min_plotted_x)
+
+    def xplt(x: float) -> float:
+        if shrink_to is None:
+            return x
+        return _x_data_to_plot_shrink(x, min_plotted_x, shrink_to)
+
+    pad = max(x_max_data * 0.02, 1.0)
+    x_hi_data = x_max_data + pad
+    x_hi_plot = xplt(x_hi_data)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.set_title(title)
 
     stem_colors: dict[tuple[str, frozenset[str]], str] = {}
     for sk in sub_keys:
@@ -669,8 +792,9 @@ def plot_task(
                     means.append(float("nan"))
                     stds.append(float("nan"))
 
+            xs_plot = [xplt(x) for x in xs_stem]
             stem_line = ax.errorbar(
-                xs_stem,
+                xs_plot,
                 means,
                 yerr=stds,
                 marker="o",
@@ -683,16 +807,19 @@ def plot_task(
             stem_colors[sk] = stem_line.lines[0].get_color()
 
     for sk in sub_keys:
+        if sk in max_series and sk not in stem_colors and include_max_only:
+            ln = ax.plot([], [], linestyle="solid")[0]
+            stem_colors[sk] = ln.get_color()
+            ln.remove()
+
+    for sk in sub_keys:
         if sk not in max_series:
             continue
         max_label, mx, max_means, max_stds = max_series[sk]
-        dotted_color = stem_colors.get(sk)
-        if dotted_color is None and include_max_only:
-            ln = ax.plot([], [], linestyle="solid")[0]
-            dotted_color = ln.get_color()
-            ln.remove()
+        dotted_color = stem_colors[sk]
+        mx_plot = [xplt(x) for x in mx]
         ax.errorbar(
-            mx,
+            mx_plot,
             max_means,
             yerr=max_stds,
             marker="o",
@@ -704,12 +831,46 @@ def plot_task(
             label=max_label,
         )
 
-    ax.set_title(title)
+    ax.set_xlim(0.0, x_hi_plot)
+
+    if shrink_to is None:
+        if x_ticks_mode == "ends":
+            ax.set_xticks([float(e) for e in x_tick_ends])
+            ax.set_xticklabels([f"<{e}" for e in x_tick_ends])
+        else:
+            step = max(int(x_tick_step), 1)
+            hi = int(math.ceil(x_hi_data / step) * step)
+            reg_ticks = [float(x) for x in range(0, hi + 1, step)]
+            ax.set_xticks(reg_ticks)
+            ax.set_xticklabels(
+                [str(int(t)) if t == int(t) else str(t) for t in reg_ticks]
+            )
+    else:
+        if x_ticks_mode == "ends":
+            tick_data = sorted({float(e) for e in x_tick_ends})
+            if not tick_data:
+                tick_data = [0.0]
+            elif tick_data[0] > 0:
+                tick_data = [0.0, *tick_data]
+            tick_plot = [xplt(t) for t in tick_data]
+            labels = ["0" if t <= 0 else f"<{int(t)}" for t in tick_data]
+            ax.set_xticks(tick_plot)
+            ax.set_xticklabels(labels)
+        else:
+            step = max(int(x_tick_step), 1)
+            hi_d = int(math.ceil(x_hi_data / step) * step)
+            reg_data = [float(x) for x in range(0, hi_d + 1, step)]
+            tick_plot = [xplt(t) for t in reg_data]
+            ax.set_xticks(tick_plot)
+            ax.set_xticklabels(
+                [str(int(t)) if t == int(t) else str(t) for t in reg_data]
+            )
+
+        _draw_x_shrink_marks(ax, shrink_to, x_hi_plot)
+
     ax.set_xlabel("Validation length (upper bound)")
     ax.set_ylabel("Accuracy (%)")
     ax.set_ylim(-10.0, 110.0)
-    pad = max(x_max_data * 0.02, 1.0)
-    ax.set_xlim(0.0, x_max_data + pad)
     ax.grid(alpha=0.3)
     if legend_loc != "none":
         ax.legend(loc=legend_loc, fontsize=10, frameon=False)
@@ -813,6 +974,18 @@ def main() -> int:
         default=10,
         help="Spacing for --x-ticks=regular.",
     )
+    parser.add_argument(
+        "--x-axis-break",
+        type=str,
+        default=None,
+        metavar="POS",
+        help=(
+            "Compress [0, first bucket] onto plot [0, POS]: first datapoint is drawn at x=POS, "
+            "then the axis continues with the same numeric spacing as the data. "
+            "POS is a positive number (plot units, e.g. 5) or 'auto' (uses 5). "
+            "// marks mark the join. Omit for an ordinary linear axis."
+        ),
+    )
     max_group = parser.add_mutually_exclusive_group()
     max_group.add_argument(
         "--include-max",
@@ -853,6 +1026,7 @@ def main() -> int:
         include_max_only=args.include_max_only,
         x_ticks_mode=args.x_ticks_mode,
         x_tick_step=args.x_tick_step,
+        x_axis_break=args.x_axis_break,
     )
     print(f"Wrote plot: {plot_path}")
     return 0

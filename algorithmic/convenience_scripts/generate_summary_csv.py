@@ -21,11 +21,15 @@ _LINE_LR_RE = re.compile(r"\blr:\s*([0-9]*\.?[0-9]+(?:e-?[0-9]+)?)")
 # Known SSM kernel identifiers.  Extend this set to add new kernels; they are
 # pre-extracted from the model string before the tokeniser runs so that the
 # [sa]+ layer-ordering rule can remain a simple (?:a|s)+ without any lookaheads.
-KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba"})
+KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba", "gdn"})
+
+ARCHITECTURES = ["lm", "hyb", "ssm", "olmo"]
 
 # Kernel placeholders use \x01N\x01 (SOH byte as delimiter) so they cannot be
 # split by any letter or digit pattern in the tokeniser regex.
 _KERNEL_SLOT_RE = re.compile(r"\x01(\d+)\x01")
+
+DEAFAULT_FEATURE_ORDER = ["l", "h", "d", "dr"] # Included as some logs are accidentally missing some features
 
 # Tokenizer for model strings.  Order matters: more specific / longer patterns
 # must come before more general ones.
@@ -37,6 +41,8 @@ _MODEL_TOKEN_RE = re.compile(
     r"\x01\d+\x01"                              # kernel slot — restore in tokenize_model
     r"|nope"                                    # NoPE flag — must precede "pe"
     r"|noln"                                    # no-LayerNorm flag — must precede "ln"
+    r"|none"                                    # no Nevative Eigenvalues for olmo
+    r"|olmo"                                    # library package
     r"|hyb"                                     # hybrid architecture
     r"|ssm"                                     # SSM architecture
     r"|lm(?![a-z])"                             # LM/transformer architecture
@@ -45,6 +51,7 @@ _MODEL_TOKEN_RE = re.compile(
     r"|dr"                                      # dropout suffix (pure-alpha form)
     r"|pe"                                      # positional-encoding flag
     r"|ln"                                      # LayerNorm flag
+    r"|ne"                                      # Negative Eigenvalues for olmo
     r"|lr"                                      # learning-rate suffix (pure-alpha)
     r"|(?:a|s)+"                                # layer-ordering: sa, as, sas, …
     r"|[0-9]+(?:\.[0-9]+)?(?:mlp|dr|lr|[lhdk])"  # num+known-suffix: 1l, 4d, 0dr, 30k, 0.001lr
@@ -56,7 +63,7 @@ _MODEL_TOKEN_RE = re.compile(
 
 # Columns derived by parsing the model specification string.
 MODEL_SPEC_COLUMNS = [
-    "arch",          # lm | hyb | ssm
+    "arch",          # lm | hyb | ssm | olmo
     "layers",        # number of layers (l)
     "heads",         # number of attention heads (h)
     "d_model",       # embedding dimension (d)
@@ -65,6 +72,7 @@ MODEL_SPEC_COLUMNS = [
     "kernel",        # SSM kernel type (s4, s6, …); "-" for lm
     "pe",            # positional encoding: True / False / -
     "ln",            # layer norm: True / False / -
+    "ne",            # negative eigenvalues: True / False / -
     "train_steps_k", # training steps in thousands (stp…k)
     "layer_order",   # hybrid layer ordering, e.g. sa, sas, as; "-" for lm/ssm
 ]
@@ -95,27 +103,36 @@ def parse_model_spec(model: str) -> dict[str, str]:
 
     pure_alpha: set[str] = set()
     features: dict[str, str] = {}  # alpha-key → numeric-value (last wins)
+    ith_feature = 0
     for tok in tokens:
-        feat = feature_from_token(tok)
+        feat = feature_from_token(tok, ith_feature)
         if feat is not None:
             key, val = feat
             features[key] = val
+            ith_feature += 1
         else:
             pure_alpha.add(tok)
 
     # ── Architecture ──────────────────────────────────────────────────────────
+    arch = ""
+    if "olmo" in pure_alpha:
+        arch += "olmo"
     if "hyb" in pure_alpha:
-        arch = "hyb"
-    elif "ssm" in pure_alpha:
-        arch = "ssm"
-    else:
-        arch = "lm"
+        arch += "hyb"
+    elif "lm" in pure_alpha:
+        arch += "lm"
+    else: # olmo uses gdn, which is also ssm
+        arch += "ssm"
+
 
     # ── SSM kernel ───────────────────────────────────────────────────────────
     # Kernels are matched as whole tokens (KNOWN_KERNELS), so we just look for
     # the first kernel token in the stream; default to "s4" if absent.
-    if arch in ("hyb", "ssm"):
-        kernel = next((tok for tok in tokens if tok in KNOWN_KERNELS), "s4")
+    if "hyb" in arch or "ssm" in arch:
+        if "olmo" in arch:
+            kernel = "gdn"
+        else:
+            kernel = next((tok for tok in tokens if tok in KNOWN_KERNELS), "s4")
     else:
         kernel = "-"
 
@@ -135,6 +152,15 @@ def parse_model_spec(model: str) -> dict[str, str]:
     else:
         ln = "-"
 
+    # ── Negative eigenvalues ───────────────────────────────────────────────────────────
+    if "none" in pure_alpha:
+        ne = "False"
+    elif "ne" in pure_alpha:
+        ne = "True"
+    else:
+        ne = "-"
+
+
     # ── Training steps (thousands) ───────────────────────────────────────────
     # Written as stp{N}k; tokeniser yields pure-alpha "stp" + feature ("k", N)
     if "stp" in pure_alpha and "k" in features:
@@ -145,7 +171,7 @@ def parse_model_spec(model: str) -> dict[str, str]:
     # ── Hybrid layer ordering ([sa]+) ─────────────────────────────────────────
     # We take the first token matching [sa]+ in the original token stream.
     layer_order = "-"
-    if arch == "hyb":
+    if "hyb" in arch:
         for tok in tokens:
             if re.fullmatch(r"[sa]+", tok):
                 layer_order = tok
@@ -161,6 +187,7 @@ def parse_model_spec(model: str) -> dict[str, str]:
         "kernel": kernel,
         "pe": pe,
         "ln": ln,
+        "ne": ne,
         "train_steps_k": train_steps_k,
         "layer_order": layer_order,
     }
@@ -282,7 +309,7 @@ def parse_include_rule(include_value: str) -> tuple[str, set[float] | None]:
     return include_value.strip(), None
 
 
-def feature_from_token(token: str) -> tuple[str, str] | None:
+def feature_from_token(token: str, ith_feature=None) -> tuple[str, str] | None:
     """Return ``(key, value)`` if *token* encodes a named numeric feature, else ``None``.
 
     Both ``num+alpha`` tokens (e.g. ``"1l"`` → ``("l","1")``) and ``alpha+num``
@@ -295,6 +322,11 @@ def feature_from_token(token: str) -> tuple[str, str] | None:
     m = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", token)
     if m:
         return (m.group(1), m.group(2))
+    m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)", token)
+    # __________ feature attribute forgotton in model spec. Fixing that using ith_feature.
+    if m:
+        if ith_feature and ith_feature < len(DEAFAULT_FEATURE_ORDER):
+            return (DEAFAULT_FEATURE_ORDER[ith_feature], m.group(1))
     return None
 
 
@@ -364,17 +396,40 @@ def split_spec_pattern_tokens(pattern: str) -> list[str]:
     return [p.strip().lower() for p in pattern.split(",") if p.strip()]
 
 
+# Exact tokens for :func:`parse_model_spec` arch column: plain ``hyb``/``lm``/``ssm``
+# or compound ``olmohyb`` / ``olmolm`` / ``olmossm``.  Substring checks are wrong here
+# (e.g. ``"lm" in "olmohyb"`` matches the ``lm`` inside ``olmo``).
+_ARCH_PATTERN_TOKENS: frozenset[str] = frozenset(ARCHITECTURES) | frozenset(
+    f"olmo{k}" for k in ("hyb", "lm", "ssm")
+)
+
+
+def _row_arch_matches_token(row_arch: str, token: str) -> bool:
+    """Structured match for ``arch`` CSV column vs. one pattern token."""
+    ra = (row_arch or "-").strip().lower()
+    t = token.strip().lower()
+    if not ra or ra == "-":
+        return False
+    if t == "olmo":
+        return ra.startswith("olmo")
+    if t.startswith("olmo") and t != "olmo":
+        return ra == t
+    if t in ("hyb", "lm", "ssm"):
+        return ra == t or ra == f"olmo{t}"
+    return False
+
+
 def _token_matches_row(row: dict[str, str], token: str) -> bool:
     """Return whether a single spec token matches structured *row* columns."""
     t = token.strip().lower()
     if not t:
         return True
 
-    if t in KNOWN_KERNELS:
-        return row.get("kernel", "-") == t
+    if any(kernel in t for kernel in KNOWN_KERNELS):
+        return t in row.get("kernel", "-")
 
-    if t in ("lm", "hyb", "ssm"):
-        return row.get("arch", "-") == t
+    if t in _ARCH_PATTERN_TOKENS:
+        return _row_arch_matches_token(row.get("arch", "-"), t)
 
     if t == "nope":
         return row.get("pe", "-") == "False"
@@ -384,6 +439,8 @@ def _token_matches_row(row: dict[str, str], token: str) -> bool:
         return row.get("pe", "-") == "True"
     if t == "ln":
         return row.get("ln", "-") == "True"
+    if t == "ne":
+        return row.get("ne", "-") == "True"
 
     if re.fullmatch(r"[sa]+", t):
         return row.get("layer_order", "-") == t
