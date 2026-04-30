@@ -15,7 +15,7 @@ from utils import default_ssm_sweep, ArchSlot
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop", "selective_copy", "mkar"])
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
     parser.add_argument("--save-final-weights", action="store_true")

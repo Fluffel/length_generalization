@@ -15,7 +15,7 @@ from utils import ArchSlot, default_transformer_sweep
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop", "selective_copy", "mkar"])
     parser.add_argument("--nope", action="store_true")
     parser.add_argument(
         "--use-olmo",

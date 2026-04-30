@@ -7,7 +7,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
-from utils import RunConfig
+try:
+    from utils import RunConfig
+except ImportError:
+    from algorithmic.utils import RunConfig
 
 
 class customTokenizer:

@@ -4,7 +4,11 @@ import string
 from copy import deepcopy
 from collections import Counter
 
-from utils import RunConfig
+try:
+    from utils import RunConfig
+except ImportError:
+    # When imported as `algorithmic.dataset_generators` with repo root on sys.path
+    from algorithmic.utils import RunConfig
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
@@ -638,6 +642,166 @@ class FlipFlopDataset(CustomDataset):
             yield instance, pos_ids, label
 
 
+class SelectiveCopyDataset(CustomDataset):
+    """
+    Selective copying: vocabulary V = N ∪ M with |N| = marker_vocab_size numbered tokens
+    #1 … #marker_vocab_size and |M| = misc_vocab_size arbitrary filler tokens.
+
+    For content (x_j)_{j=1}^L let i be the maximizer among indices with tokens in N
+    (equivalently, the largest j such that x_j ∈ N). The target token is x_{L+1-i}.
+
+    Sequence: <bos> x_1 … x_L <sep> answer <eos> with loss only on answer.
+    """
+
+    def __init__(
+        self,
+        length_range: tuple[int, int],
+        max_test_length: int,
+        marker_vocab_size: int = 16,
+        misc_vocab_size: int = 16,
+        add_positional_offset: bool = True,
+    ):
+        super().__init__(max_test_length + 4, add_positional_offset) # <bos>, <sep>, <eos> and <ans>
+
+        assert marker_vocab_size >= 1 and misc_vocab_size >= 1
+
+        markers = [f"#{k + 1}" for k in range(marker_vocab_size)]
+        fillers = [f"m{k}" for k in range(misc_vocab_size)]
+        self.tokenizer = customTokenizer(markers + fillers)
+
+        self._marker_vocab_size = marker_vocab_size
+        self._misc_vocab_size = misc_vocab_size
+
+        self.range_min, self.range_max = length_range
+        self.range_min = max(1, self.range_min)
+        self.max_test_length = max_test_length
+        assert len(self.tokenizer) - 4 >= marker_vocab_size + misc_vocab_size
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
+
+    def _compute_answer_token_id(self, content: list[int]) -> int:
+        """Answer = x_{L+1-i} where i is 1-based index of last position with token in N."""
+        last_marker = -1
+        for tid in content:
+            if tid < self._marker_vocab_size:
+                last_marker = tid
+        assert last_marker >= 0
+
+        L = len(content) - 1
+        return content[L - last_marker]
+
+    def __iter__(self):
+        vocab_size = self._marker_vocab_size + self._misc_vocab_size
+
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            while True:
+                content = [random.randrange(vocab_size) for _ in range(length)]
+
+                valid_instance = False
+                for t in content:
+                    if t < self._marker_vocab_size: # is marker
+                        if t < length:
+                            valid_instance = True
+                        else:
+                            valid_instance = False
+                if valid_instance:
+                    break
+
+            ans = self._compute_answer_token_id(content)
+
+            instance = [self.tokenizer.bos_token_id]
+            instance.extend(content)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(ans)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            label[: length + 2] = [self.tokenizer.pad_token_id] * (length + 2)
+
+            pos_ids = self.get_pos_ids(len(instance), self.max_test_length - length)
+
+            yield instance, pos_ids, label
+
+
+class MKARDataset(CustomDataset):
+    """
+    Multi-token Key Associative Recall (MKAR).
+
+    For x⃗ ∈ V^L let K = x_{L-k:L} (suffix of length k).
+    Let i be the last (largest) start index with x⃗_{i:i+k} = K and i < L−k so the
+    match is strictly before the query suffix — then xi+k is well-defined inside x⃗.
+    Predict that token xi+k (immediate successor after that earlier occurrence).
+
+    Instances are sampled so K appears non-trivially (at least two occurrences);
+    stray collisions remain exponentially rare when |V|^k is large.
+    Sequence: <bos> x⃗ <sep> answer <eos> with loss only on answer.
+    """
+
+    def __init__(
+        self,
+        length_range: tuple[int, int],
+        max_test_length: int,
+        key_len: int = 4,
+        vocab_size: int = 128,
+        add_positional_offset: bool = True,
+    ):
+        super().__init__(max_test_length + 4, add_positional_offset)
+
+        assert key_len >= 1
+        assert vocab_size >= 2
+
+        self.k = key_len
+        vocab = [str(i) for i in range(vocab_size)]
+        self.tokenizer = customTokenizer(vocab)
+
+        self.range_min, self.range_max = length_range
+        assert self.range_min <= self.range_max
+
+        self.range_min = max(self.range_min, 2 * self.k + 1)
+        assert self.range_min <= self.range_max
+
+        self.max_test_length = max_test_length
+        assert len(self.tokenizer) - 4 >= vocab_size
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
+
+    @staticmethod
+    def _suffix_k(x: list[int], k: int) -> tuple[int, ...]:
+        return tuple(x[len(x) - k :])
+
+    def __iter__(self):
+        vs = len(self.tokenizer) - 4
+        k = self.k
+
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            inner_start_hi = length - 2 * k  # inclusive: inner K ends before suffix
+            inner_start = random.randint(0, inner_start_hi)
+            inner_end = inner_start + k
+
+            tail_start = length - k
+            assert inner_end <= tail_start
+
+            K = tuple(random.randrange(vs) for _ in range(k))
+            content = [random.randrange(vs) for _ in range(length)]
+            content[inner_start:inner_end] = list(K)
+            content[tail_start:length] = list(K)
+
+            ans = content[inner_end]
+
+            instance = [self.tokenizer.bos_token_id]
+            instance.extend(content)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(ans)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            label[: length + 2] = [self.tokenizer.pad_token_id] * (length + 2)
+
+            pos_ids = self.get_pos_ids(len(instance), self.max_test_length - length)
+
+            yield instance, pos_ids, label
+
+
 class EvalDataset(Dataset):
     def __init__(self, d: IterableDataset, num_data: int) -> None:
         super().__init__()
@@ -744,6 +908,24 @@ def build_datasets(run_config: RunConfig):
             train_dataset = FlipFlopDataset(train_length_range, max_test_length)
             test_dataset = {
                 f"len{r[0]}-{r[1]}": EvalDataset(FlipFlopDataset(r, max_test_length, add_positional_offset=False), test_num)
+                for r in test_length_ranges
+            }
+        case "selective_copy":
+            train_dataset = SelectiveCopyDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    SelectiveCopyDataset(r, max_test_length, add_positional_offset=False),
+                    test_num,
+                )
+                for r in test_length_ranges
+            }
+        case "mkar":
+            train_dataset = MKARDataset(train_length_range, max_test_length)
+            test_dataset = {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    MKARDataset(r, max_test_length, add_positional_offset=False),
+                    test_num,
+                )
                 for r in test_length_ranges
             }
         case _:

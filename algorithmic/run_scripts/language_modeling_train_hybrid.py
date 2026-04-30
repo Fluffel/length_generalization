@@ -15,7 +15,7 @@ from utils import ArchSlot, default_hybrid_sweep
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop"])
+    parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition", "mqar", "flipflop", "selective_copy", "mkar"])
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--job-id", type=str, default="")
     parser.add_argument(
@@ -48,10 +48,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     archs = [
         ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=btwmlp, layer_norm=not args.noln)
-        for l in [1, 2, 4]
-        for h in [1, 2, 4]
-        for d in [16, 64]
-        for dr in [0, 0.1]
+        for l in [1]
+        for h in [1]
+        for d in [64]
+        for dr in [0.1]
         for lr in [1e-3]
         for btwmlp in [2]
     ]
