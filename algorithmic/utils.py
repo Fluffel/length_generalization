@@ -121,10 +121,19 @@ class RunConfig:
     seeds: int = 1
     job_id: str = ""
 
+    # MQAR configs
     monoid: str = "parity"
     monoid_n: int = 2
     key_size: int = 32
-    query_fraction: float = 0.2
+    query_fraction_upper: float = 0.2
+    query_fraction_lower: float = 0.2
+
+    # MKAR configs
+    key_len = 4
+    mkar_vocab_size = 128
+
+    # SelectiveCopy configs
+    marker_vocab_size = 16
 
     train_length_range: tuple[int, int] = (0, 50)
     num_test_bins: int = 3

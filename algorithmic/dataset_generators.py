@@ -437,7 +437,7 @@ def monoid_from_cayley_table(table: list[list[int]], identity: int):
 class MQARWordProblemDataset(CustomDataset):
     def __init__(self, length_range: tuple[int, int],
                  max_test_length: int, add_positional_offset: bool = True, key_size: int = 32,
-                 query_fraction: float = 0.2, monoid_type: str = "parity", monoid_n: int = 2):
+                 query_fraction_upper: float = 0.2, query_fraction_lower: float = 0.2, monoid_type: str = "parity", monoid_n: int = 2):
         """
         MQAR Word Problem dataset.
 
@@ -464,7 +464,8 @@ class MQARWordProblemDataset(CustomDataset):
         self.range_min, self.range_max = length_range
         self.max_test_length = max_test_length
         self.key_size = key_size
-        self.query_fraction = query_fraction
+        self.query_fraction_upper = query_fraction_upper
+        self.query_fraction_lower = query_fraction_lower
 
 
         # Key token IDs: 0..key_size-1
@@ -472,13 +473,15 @@ class MQARWordProblemDataset(CustomDataset):
         self.monoid_token_offset = key_size
 
         # Validate constraints
-        assert 0 < query_fraction < 1, "query_fraction must be in (0, 1)"
+        assert 0 < query_fraction_lower <= query_fraction_upper < 1, "query_fraction must be in (0, 1)"
         # Ensure we can always form valid instances at range_min
         self._validate_length(self.range_min)
 
     def _derive_T_Q(self, length: int):
         """Derive T (num update pairs) and Q (num queries) from content length."""
-        Q = max(1, round(self.query_fraction * length))
+        query_fraction = random.uniform(self.query_fraction_lower, self.query_fraction_upper)
+   
+        Q = max(1, round(query_fraction * length))
         T = (length - Q) // 2
         # Clamp: need T >= Q (enough keys to query) and T >= 1
         if T < Q:
@@ -885,7 +888,8 @@ def build_datasets(run_config: RunConfig):
                 train_length_range,
                 max_test_length,
                 key_size=run_config.key_size,
-                query_fraction=run_config.query_fraction,
+                query_fraction_upper=run_config.query_fraction_upper,
+                query_fraction_lower=run_config.query_fraction_lower,
                 monoid_type=run_config.monoid,
                 monoid_n=run_config.monoid_n,
             )
@@ -896,7 +900,8 @@ def build_datasets(run_config: RunConfig):
                         max_test_length,
                         add_positional_offset=False,
                         key_size=run_config.key_size,
-                        query_fraction=run_config.query_fraction,
+                        query_fraction_upper=run_config.query_fraction_upper,
+                        query_fraction_lower=run_config.query_fraction_lower,
                         monoid_type=run_config.monoid,
                         monoid_n=run_config.monoid_n,
                     ),
@@ -911,19 +916,19 @@ def build_datasets(run_config: RunConfig):
                 for r in test_length_ranges
             }
         case "selective_copy":
-            train_dataset = SelectiveCopyDataset(train_length_range, max_test_length)
+            train_dataset = SelectiveCopyDataset(train_length_range, max_test_length, marker_vocab_size=run_config.marker_vocab_size)
             test_dataset = {
                 f"len{r[0]}-{r[1]}": EvalDataset(
-                    SelectiveCopyDataset(r, max_test_length, add_positional_offset=False),
+                    SelectiveCopyDataset(r, max_test_length, add_positional_offset=False, marker_vocab_size=run_config.marker_vocab_size),
                     test_num,
                 )
                 for r in test_length_ranges
             }
         case "mkar":
-            train_dataset = MKARDataset(train_length_range, max_test_length)
+            train_dataset = MKARDataset(train_length_range, max_test_length, key_len=run_config.key_len)
             test_dataset = {
                 f"len{r[0]}-{r[1]}": EvalDataset(
-                    MKARDataset(r, max_test_length, add_positional_offset=False),
+                    MKARDataset(r, max_test_length, add_positional_offset=False, key_len=run_config.key_len),
                     test_num,
                 )
                 for r in test_length_ranges
