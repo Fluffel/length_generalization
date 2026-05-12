@@ -503,14 +503,14 @@ def legend_label_from_rows(rows: list[dict[str, str]]) -> str:
 
 def _assign_series_id(
     row: dict[str, str],
-    explicit_patterns: list[str],
-    wildcard_rest: bool,
+    explicit_patterns: list[tuple[int, str]],
+    wildcard_index: int | None,
 ) -> str:
-    for pattern in explicit_patterns:
+    for idx, pattern in explicit_patterns:
         if row_matches_spec_pattern(row, pattern):
-            return f"p:{pattern}"
-    if wildcard_rest:
-        return "p:*"
+            return f"p{idx}:{pattern}"
+    if wildcard_index is not None:
+        return f"p{wildcard_index}:*"
     m = row["model"]
     lr = row["learning_rate"]
     return f"solo:{m}|{lr}"
@@ -649,6 +649,7 @@ def plot_task(
     include_patterns: list[str],
     remove_patterns: list[str],
     group_patterns: list[str],
+    group_labels: list[str],
     include_max: bool,
     include_max_only: bool,
     *,
@@ -699,13 +700,30 @@ def plot_task(
         datapoint_bucket_vals[key].append(float(row["accuracy"]))
     _collapse_identical_datapoint_buckets(datapoint_bucket_vals)
 
-    explicit_patterns = [p for p in group_patterns if p.strip() and p.strip() != "*"]
-    wildcard_rest = any(p.strip() == "*" for p in group_patterns)
+    indexed_group_patterns = [
+        (idx, p.strip()) for idx, p in enumerate(group_patterns) if p.strip()
+    ]
+    explicit_patterns = [(idx, p) for idx, p in indexed_group_patterns if p != "*"]
+    wildcard_index = next((idx for idx, p in indexed_group_patterns if p == "*"), None)
 
     series_id_to_rows: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in filtered_rows:
-        sid = _assign_series_id(row, explicit_patterns, wildcard_rest)
+        sid = _assign_series_id(row, explicit_patterns, wildcard_index)
         series_id_to_rows[sid].append(row)
+
+    sid_to_custom_label: dict[str, str] = {}
+    for sid in series_id_to_rows:
+        if not sid.startswith("p"):
+            continue
+        tag = sid.split(":", 1)[0]
+        try:
+            idx = int(tag[1:])
+        except ValueError:
+            continue
+        if 0 <= idx < len(group_labels):
+            label = group_labels[idx].strip()
+            if label:
+                sid_to_custom_label[sid] = label
 
     # Sub-series: (base_sid, bin_signature) so each line only pools same-bin datapoints.
     sub_series_rows: dict[tuple[str, frozenset[str]], list[dict[str, str]]] = {}
@@ -728,7 +746,7 @@ def plot_task(
     display_labels: dict[tuple[str, frozenset[str]], str] = {}
     for sk in sub_keys:
         sid, sig = sk
-        base = base_labels[sk]
+        base = sid_to_custom_label.get(sid, base_labels[sk])
         if sig_count_by_sid[sid] > 1:
             display_labels[sk] = f"{base} [ends {_signature_label(sig)}]"
         else:
@@ -800,13 +818,9 @@ def plot_task(
             )
             if not pruned:
                 continue
-            win_rows = [
-                r
-                for r in sub_series_rows[sk]
-                if (r["model"], float(r["learning_rate"])) in pruned
-            ]
-            max_body = legend_label_from_rows(win_rows) or sub_key_to_display[sk]
-            max_label = f"max:{max_body}"
+            max_body = sub_key_to_display[sk]
+            # max_label = f"max:{max_body}"
+            max_label = f"{max_body}"
             mx, mmean, mstd = max_line_xy_for_winners(
                 pruned,
                 ends_for_sig or x_tick_ends,
@@ -1074,6 +1088,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--group-label",
+        action="append",
+        default=[],
+        help=(
+            "Legend label for each --group-pattern, in the same order. "
+            "Provide once per group pattern."
+        ),
+    )
+    parser.add_argument(
         "--x-ticks",
         dest="x_ticks_mode",
         choices=("ends", "regular", "bins"),
@@ -1122,6 +1145,12 @@ def main() -> int:
         raise SystemExit("--x-tick-step must be >= 1.")
     if args.num_bins is not None and args.num_bins < 1:
         raise SystemExit("--num-bins must be >= 1.")
+    if args.group_label and not args.group_pattern:
+        raise SystemExit("--group-label requires at least one --group-pattern.")
+    if args.group_label and len(args.group_label) != len(args.group_pattern):
+        raise SystemExit(
+            "--group-label count must match --group-pattern count (same order)."
+        )
 
     rows = load_csv_rows(args.input_csv)
     if not rows:
@@ -1141,6 +1170,7 @@ def main() -> int:
         include_patterns=args.include_pattern,
         remove_patterns=args.remove_pattern,
         group_patterns=args.group_pattern,
+        group_labels=args.group_label,
         include_max=args.include_max,
         include_max_only=args.include_max_only,
         x_ticks_mode=args.x_ticks_mode,
