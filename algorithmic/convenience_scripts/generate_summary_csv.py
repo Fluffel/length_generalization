@@ -4,9 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
-from collections import defaultdict
 from pathlib import Path
-from statistics import mean
 
 # Extract the model name (first whitespace-delimited token on the line).
 _LINE_MODEL_RE = re.compile(r"^(\S+)")
@@ -22,8 +20,6 @@ _LINE_LR_RE = re.compile(r"\blr:\s*([0-9]*\.?[0-9]+(?:e-?[0-9]+)?)")
 # pre-extracted from the model string before the tokeniser runs so that the
 # [sa]+ layer-ordering rule can remain a simple (?:a|s)+ without any lookaheads.
 KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba", "gdn"})
-
-ARCHITECTURES = ["lm", "hyb", "ssm", "olmo"]
 
 # Kernel placeholders use \x01N\x01 (SOH byte as delimiter) so they cannot be
 # split by any letter or digit pattern in the tokeniser regex.
@@ -92,6 +88,19 @@ MODEL_SPEC_COLUMNS = [
     "layer_order",   # hybrid layer ordering, e.g. sa, sas, as; "-" for lm/ssm
 ]
 
+# Task-specific dataset parameters. Filled with defaults for legacy filenames.
+TASK_PARAM_COLUMNS = [
+    "mkar_key_len",
+    "mkar_vocab_size",
+    "mqar_query_fraction_lower",
+    "mqar_query_fraction_upper",
+    "mqar_monoid",
+    "mqar_monoid_n",
+    "mqar_key_size",
+    "selective_copy_marker_vocab_size",
+    "selective_copy_misc_vocab_size",
+]
+
 CSV_COLUMNS = [
     "task",
     # "source_file",
@@ -100,7 +109,38 @@ CSV_COLUMNS = [
     "learning_rate",
     "bucket",
     "accuracy",
-] + MODEL_SPEC_COLUMNS
+] + MODEL_SPEC_COLUMNS + TASK_PARAM_COLUMNS
+
+_FLOAT_TOKEN_RE = r"[0-9]+(?:\.[0-9]+)?"
+_MKAR_KEY_LEN_RE = re.compile(r"key[_-]?len(?P<v>[0-9]+)")
+_MKAR_VOCAB_RE = re.compile(r"(?:v[_-]?size|vocab[_-]?size)(?P<v>[0-9]+)")
+_MQAR_FL_RE = re.compile(r"(?:fl|fraction[_-]?lower)(?P<v>" + _FLOAT_TOKEN_RE + r")")
+_MQAR_FU_RE = re.compile(r"(?:fu|fraction[_-]?upper)(?P<v>" + _FLOAT_TOKEN_RE + r")")
+_MQAR_KEY_SIZE_RE = re.compile(r"(?:key[_-]?size|ks)(?P<v>[0-9]+)")
+_MQAR_MONOID_N_RE = re.compile(r"(?:monoid[_-]?n|mn)(?P<v>[0-9]+)")
+_MQAR_MONOID_RE = re.compile(r"(?:monoid|mt)(?P<v>parity|cyclic)")
+_SEL_MARKER_RE = re.compile(
+    r"(?:marker[_-]?vocab[_-]?size|marker[_-]?size|mv|v[_-]?size)(?P<v>[0-9]+)"
+)
+_SEL_MISC_RE = re.compile(r"(?:misc[_-]?vocab[_-]?size|misc[_-]?size|ms)(?P<v>[0-9]+)")
+
+TASK_PARAM_DEFAULTS: dict[str, dict[str, str]] = {
+    "mkar": {
+        "mkar_key_len": "4",
+        "mkar_vocab_size": "128",
+    },
+    "mqar": {
+        "mqar_query_fraction_lower": "0.2",
+        "mqar_query_fraction_upper": "0.2",
+        "mqar_monoid": "parity",
+        "mqar_monoid_n": "2",
+        "mqar_key_size": "32",
+    },
+    "selective_copy": {
+        "selective_copy_marker_vocab_size": "16",
+        "selective_copy_misc_vocab_size": "16",
+    },
+}
 
 
 def parse_model_spec(model: str) -> dict[str, str]:
@@ -213,7 +253,49 @@ def parse_model_spec(model: str) -> dict[str, str]:
     }
 
 
-def parse_summary_line(line: str, task: str) -> list[dict[str, str | int | float]]:
+def parse_task_params(task: str, summary_file: Path) -> dict[str, str]:
+    """Task-parameter columns extracted from summary filename, with defaults."""
+    params = {col: "-" for col in TASK_PARAM_COLUMNS}
+    defaults = TASK_PARAM_DEFAULTS.get(task, {})
+    params.update(defaults)
+
+    stem = summary_file.stem.lower()
+
+    if task == "mkar":
+        if (m := _MKAR_KEY_LEN_RE.search(stem)):
+            params["mkar_key_len"] = m.group("v")
+        if (m := _MKAR_VOCAB_RE.search(stem)):
+            params["mkar_vocab_size"] = m.group("v")
+        return params
+
+    if task == "mqar":
+        if (m := _MQAR_FL_RE.search(stem)):
+            params["mqar_query_fraction_lower"] = m.group("v")
+        if (m := _MQAR_FU_RE.search(stem)):
+            params["mqar_query_fraction_upper"] = m.group("v")
+        if (m := _MQAR_KEY_SIZE_RE.search(stem)):
+            params["mqar_key_size"] = m.group("v")
+        if (m := _MQAR_MONOID_N_RE.search(stem)):
+            params["mqar_monoid_n"] = m.group("v")
+        if (m := _MQAR_MONOID_RE.search(stem)):
+            params["mqar_monoid"] = m.group("v")
+        return params
+
+    if task == "selective_copy":
+        if (m := _SEL_MARKER_RE.search(stem)):
+            params["selective_copy_marker_vocab_size"] = m.group("v")
+        if (m := _SEL_MISC_RE.search(stem)):
+            params["selective_copy_misc_vocab_size"] = m.group("v")
+        return params
+
+    return params
+
+
+def parse_summary_line(
+    line: str,
+    task: str,
+    task_params: dict[str, str] | None = None,
+) -> list[dict[str, str | int | float]]:
     line = line.strip()
     m_model = _LINE_MODEL_RE.match(line)
     m_lr = _LINE_LR_RE.search(line)
@@ -235,6 +317,7 @@ def parse_summary_line(line: str, task: str) -> list[dict[str, str | int | float
             "accuracy": float(acc_str),
         }
         row.update(spec)  # type: ignore[arg-type]
+        row.update(task_params or {})
         rows.append(row)
     return rows
 
@@ -283,16 +366,21 @@ def build_or_update_csv(
         # that spec columns are always up-to-date even when loading a legacy CSV.
         base: dict[str, str | int | float] = {col: row.get(col, "-") for col in CSV_COLUMNS}
         base["bucket"] = bucket
+        task_defaults = TASK_PARAM_DEFAULTS.get(row.get("task", ""), {})
+        for col, default_val in task_defaults.items():
+            if str(base.get(col, "-")).strip() in {"", "-"}:
+                base[col] = default_val
         base.update(parse_model_spec(row["model"]))  # type: ignore[arg-type]
         merged_rows.append(base)
 
     summary_files = sorted(logs_root.glob("**/summary*.txt"))
     for summary_file in summary_files:
         task = summary_file.parent.name
+        task_params = parse_task_params(task, summary_file)
         with summary_file.open("r") as f:
             for raw_line in f:
                 parsed_rows = parse_summary_line(
-                    raw_line, task=task
+                    raw_line, task=task, task_params=task_params
                 )
                 for row in parsed_rows:
                     key = (
@@ -315,18 +403,6 @@ def build_or_update_csv(
 
     write_csv_rows(csv_path, merged_rows)
     return load_csv_rows(csv_path)
-
-
-def parse_include_rule(include_value: str) -> tuple[str, set[float] | None]:
-    if ":" in include_value:
-        model, lr_part = include_value.split(":", 1)
-        model = model.strip()
-        lr_part = lr_part.strip()
-        if lr_part == "*" or lr_part == "":
-            return model, None
-        lr_values = {float(x.strip()) for x in lr_part.split(",") if x.strip()}
-        return model, lr_values
-    return include_value.strip(), None
 
 
 def feature_from_token(token: str, ith_feature=None) -> tuple[str, str] | None:
@@ -378,11 +454,6 @@ def tokenize_model(model: str) -> list[str]:
     ]
 
 
-def _bucket_sort_key(bucket: str) -> int:
-    """Numeric sort key for bucket range strings like ``'0-50'``, ``'101-150'``."""
-    return int(bucket.split("-")[0]) if "-" in bucket else 0
-
-
 def _normalize_bucket(bucket: str) -> str:
     """Strip legacy ``eval_len`` prefix from bucket names."""
     return bucket[len("eval_len"):] if bucket.startswith("eval_len") else bucket
@@ -414,380 +485,6 @@ def row_matches_bucket_end_digit(
     return (ub % 10) in allowed
 
 
-def split_spec_pattern_tokens(pattern: str) -> list[str]:
-    """Split a CSV-row spec pattern into trimmed lowercase tokens (comma = AND)."""
-    return [p.strip().lower() for p in pattern.split(",") if p.strip()]
-
-
-# Exact tokens for :func:`parse_model_spec` arch column: plain ``hyb``/``lm``/``ssm``
-# or compound ``olmohyb`` / ``olmolm`` / ``olmossm``.  Substring checks are wrong here
-# (e.g. ``"lm" in "olmohyb"`` matches the ``lm`` inside ``olmo``).
-_ARCH_PATTERN_TOKENS: frozenset[str] = frozenset(ARCHITECTURES) | frozenset(
-    f"olmo{k}" for k in ("hyb", "lm", "ssm")
-)
-
-
-def _row_arch_matches_token(row_arch: str, token: str) -> bool:
-    """Structured match for ``arch`` CSV column vs. one pattern token."""
-    ra = (row_arch or "-").strip().lower()
-    t = token.strip().lower()
-    if not ra or ra == "-":
-        return False
-    if t == "olmo":
-        return ra.startswith("olmo")
-    if t.startswith("olmo") and t != "olmo":
-        return ra == t
-    if t in ("hyb", "lm", "ssm"):
-        return ra == t or ra == f"olmo{t}"
-    return False
-
-
-def _token_matches_row(row: dict[str, str], token: str) -> bool:
-    """Return whether a single spec token matches structured *row* columns."""
-    t = token.strip().lower()
-    if not t:
-        return True
-
-    if any(kernel in t for kernel in KNOWN_KERNELS):
-        return t in row.get("kernel", "-")
-
-    if t in _ARCH_PATTERN_TOKENS:
-        return _row_arch_matches_token(row.get("arch", "-"), t)
-
-    if t == "nope":
-        return row.get("pe", "-") == "False"
-    if t == "noln":
-        return row.get("ln", "-") == "False"
-    if t == "pe":
-        return row.get("pe", "-") == "True"
-    if t == "ln":
-        return row.get("ln", "-") == "True"
-    if t == "ne":
-        return row.get("ne", "-") == "True"
-
-    if re.fullmatch(r"[sa]+", t):
-        return row.get("layer_order", "-") == t
-
-    if re.fullmatch(r"\d+-\d+", t):
-        return row.get("bucket", "") == t
-
-    if t == "stp":
-        return row.get("train_steps_k", "-") != "-"
-
-    if t == "mlp":
-        return row.get("mlp_size", "-") != "-"
-
-    if t == "dr":
-        return row.get("dropout", "-") != "-"
-
-    feat = feature_from_token(t)
-    if feat is not None:
-        key, val = feat
-        if key == "s":
-            return row.get("kernel", "-") == f"s{val}"
-        if key == "lr":
-            try:
-                return abs(float(row["learning_rate"]) - float(val)) < 1e-12
-            except (KeyError, ValueError, TypeError):
-                return False
-        col_map = {
-            "l": "layers",
-            "h": "heads",
-            "d": "d_model",
-            "dr": "dropout",
-            "mlp": "mlp_size",
-            "k": "train_steps_k",
-        }
-        col = col_map.get(key)
-        if not col:
-            return False
-        got = row.get(col, "-")
-        if got == val:
-            return True
-        if col in ("layers", "heads", "d_model", "mlp_size", "train_steps_k"):
-            try:
-                return abs(float(got) - float(val)) < 1e-9
-            except ValueError:
-                return False
-        if key == "dr":
-            try:
-                return abs(float(got) - float(val)) < 1e-9
-            except ValueError:
-                return False
-        return False
-
-    return False
-
-
-def resolve_row_spec(row: dict[str, str]) -> dict[str, str]:
-    """Copy *row* with ``MODEL_SPEC_COLUMNS`` taken from :func:`parse_model_spec`.
-
-    CSV spec cells can be stale; pattern matching against architecture tokens
-    (``lm``, ``1mlp``, …) should agree with how the model string tokenises.
-    ``task``, ``bucket``, ``model``, ``learning_rate``, ``accuracy`` stay as in *row*.
-    """
-    out = dict(row)
-    spec = parse_model_spec(row.get("model", ""))
-    for col in MODEL_SPEC_COLUMNS:
-        out[col] = spec[col]
-    return out
-
-
-def row_matches_spec_pattern(row: dict[str, str], pattern: str) -> bool:
-    """Return whether *row* satisfies the spec *pattern*.
-
-    * Comma-separated clauses are **AND**-ed.  Each clause uses short notation
-      against structured CSV columns (``arch``, ``layers``, ``kernel``, …)::
-
-          1l,lm,nope   →  layers==1 AND arch==lm AND pe==False
-
-    * If there is **no** comma, try a single structured token first (against
-      :func:`resolve_row_spec` columns), then fall back to :func:`matches_pattern`
-      on the raw ``model`` string (legacy / odd encodings).
-    """
-    pattern_stripped = pattern.strip()
-    if not pattern_stripped:
-        return False
-    low = pattern_stripped.lower()
-    model = row.get("model", "")
-    row_eff = resolve_row_spec(row)
-
-    if "," in pattern_stripped:
-        tokens = split_spec_pattern_tokens(pattern_stripped)
-        if not tokens:
-            return False
-        return all(_token_matches_row(row_eff, tok) for tok in tokens)
-
-    if _token_matches_row(row_eff, low):
-        return True
-    return matches_pattern(model, low)
-
-
-def _parse_model_tokens(model: str) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
-    """Return ``(pure_alpha_flags, feature_pairs)`` for *model*."""
-    pure_alpha: set[str] = set()
-    features: set[tuple[str, str]] = set()
-    for tok in tokenize_model(model):
-        feat = feature_from_token(tok)
-        if feat is not None:
-            features.add(feat)
-        else:
-            pure_alpha.add(tok)
-    return frozenset(pure_alpha), frozenset(features)
-
-
-def extract_feature_tokens(value: str) -> list[tuple[str, str]]:
-    """Extract ``(key, value)`` feature pairs from a model/pattern string."""
-    return [f for tok in tokenize_model(value) if (f := feature_from_token(tok)) is not None]
-
-
-def matches_pattern(model: str, pattern: str) -> bool:
-    """Return ``True`` if *model* satisfies all constraints expressed in *pattern*.
-
-    Matching is **token-level**, not substring-level:
-
-    * Pure-alpha flag tokens (``nope``, ``pe``, ``noln``, ``ln``, ``hyb``, …) must
-      appear verbatim in the model's token set, **or** must match the alpha key of
-      a numeric feature (so ``"dr"`` matches ``"0dr"`` or ``"0.1dr"``).
-    * Numeric feature tokens (``"1l"``, ``"s4"``, ``"2mlp"``, ``"stp30k"`` parsed
-      as ``stp`` + ``30k``) must appear as exact feature pairs in the model.
-
-    This avoids the ``"pe"`` ⊆ ``"nope"`` false-positive of the old substring
-    approach while remaining order-insensitive across feature tokens.
-    """
-    pattern_l = pattern.lower().strip()
-    if not pattern_l:
-        return False
-
-    model_alpha, model_features = _parse_model_tokens(model)
-    pattern_alpha, pattern_features = _parse_model_tokens(pattern_l)
-
-    # Every numeric feature in the pattern must be present in the model.
-    for feat in pattern_features:
-        if feat not in model_features:
-            return False
-
-    # Every pure-alpha flag in the pattern must appear as a flag token OR as the
-    # alpha key of any model feature (e.g. pattern "dr" matches model token "0dr").
-    model_feature_keys = frozenset(key for key, _ in model_features)
-    for flag in pattern_alpha:
-        if flag not in model_alpha and flag not in model_feature_keys:
-            return False
-
-    return True
-
-
-def parse_tasks(task_args: list[str]) -> list[str]:
-    tasks: list[str] = []
-    for raw in task_args:
-        parts = [p.strip() for p in raw.split(",")]
-        tasks.extend([p for p in parts if p])
-    return tasks
-
-
-def filter_rows(
-    rows: list[dict[str, str]],
-    tasks: list[str],
-    include_rules: list[tuple[str, set[float] | None]],
-    include_patterns: list[str],
-    remove_patterns: list[str] | None = None,
-) -> list[dict[str, str]]:
-    """Filter CSV *rows* by task, optional remove patterns, then optional includes.
-
-    * ``remove_patterns``: row is dropped if it matches **any** pattern (pre-filter).
-    * ``include_patterns``: if non-empty, row is kept only if it matches **any**
-      pattern **or** satisfies an ``--include`` exact model/lr rule.
-    * Within a single pattern string, comma-separated tokens are **AND**-ed
-      (see :func:`row_matches_spec_pattern`).
-    """
-    remove_patterns = [p for p in (remove_patterns or []) if p.strip()]
-
-    if tasks:
-        task_set = set(tasks)
-        rows = [r for r in rows if r["task"] in task_set]
-
-    if remove_patterns:
-        rows = [
-            r
-            for r in rows
-            if not any(row_matches_spec_pattern(r, p) for p in remove_patterns)
-        ]
-
-    include_patterns = [p for p in include_patterns if p.strip()]
-    if not include_rules and not include_patterns:
-        return rows
-
-    filtered: list[dict[str, str]] = []
-    for row in rows:
-        model = row["model"]
-        lr = float(row["learning_rate"])
-
-        matched_rule = False
-        for m_name, lrs in include_rules:
-            if model != m_name:
-                continue
-            if lrs is None or lr in lrs:
-                matched_rule = True
-                break
-
-        matched_pattern = any(row_matches_spec_pattern(row, p) for p in include_patterns)
-        if matched_rule or matched_pattern:
-            filtered.append(row)
-    return filtered
-
-
-def print_models(rows: list[dict[str, str]]) -> None:
-    grouped: dict[tuple[str, str, float, str], list[float]] = defaultdict(list)
-    for row in rows:
-        grouped[
-            (
-                row["task"],
-                row["model"],
-                float(row["learning_rate"]),
-                row["bucket"],
-            )
-        ].append(float(row["accuracy"]))
-
-    series_keys = sorted({(k[0], k[1], k[2]) for k in grouped.keys()})
-    if not series_keys:
-        print("No matching rows.")
-        return
-
-    all_buckets = sorted({k[3] for k in grouped}, key=_bucket_sort_key)
-
-    by_task: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    for task, model, lr in series_keys:
-        by_task[task].append((model, lr))
-
-    for task in sorted(by_task.keys()):
-        print(f"\nTask: {task}")
-        for model, lr in sorted(by_task[task], key=lambda x: (x[0], x[1])):
-            parts: list[str] = []
-            for bucket in all_buckets:
-                vals = grouped.get((task, model, lr, bucket), [])
-                acc = f"{mean(vals):.4f}" if vals else "nan"
-                parts.append(f"len{bucket}={acc} (n={len(vals)})")
-            print(f"- {model} | lr={lr:g} | " + " | ".join(parts))
-
-
-def _select_max_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """
-    Keep only rows belonging to max-model datapoints per task.
-    A datapoint is (model, learning_rate). We select datapoints that:
-      1) achieve the per-bin maximum mean for at least one bin, and
-      2) are not dominated in all bins by another datapoint.
-    """
-    rows_by_task: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in rows:
-        rows_by_task[row["task"]].append(row)
-
-    selected_keys: set[tuple[str, str, float]] = set()
-    for task, task_rows in rows_by_task.items():
-        datapoint_bucket_vals: dict[tuple[str, float, str], list[float]] = defaultdict(list)
-        datapoints: set[tuple[str, float]] = set()
-        for row in task_rows:
-            model = row["model"]
-            lr = float(row["learning_rate"])
-            bucket = row["bucket"]
-            datapoints.add((model, lr))
-            datapoint_bucket_vals[(model, lr, bucket)].append(float(row["accuracy"]))
-
-        if not datapoints:
-            continue
-
-        task_buckets = sorted(
-            {b for _, _, b in datapoint_bucket_vals}, key=_bucket_sort_key
-        )
-
-        point_vec: dict[tuple[str, float], list[float]] = {}
-        for dp in datapoints:
-            vec: list[float] = []
-            for bucket in task_buckets:
-                vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
-                vec.append(mean(vals) if vals else float("-inf"))
-            point_vec[dp] = vec
-
-        winner_points: set[tuple[str, float]] = set()
-        for bucket in task_buckets:
-            per_point_means: list[tuple[tuple[str, float], float]] = []
-            for dp in datapoints:
-                vals = datapoint_bucket_vals.get((dp[0], dp[1], bucket), [])
-                if vals:
-                    per_point_means.append((dp, mean(vals)))
-            if not per_point_means:
-                continue
-            max_mean = max(v for _, v in per_point_means)
-            for dp, v in per_point_means:
-                if v == max_mean:
-                    winner_points.add(dp)
-
-        # Remove winners dominated by another datapoint in all bins.
-        pruned_winners: set[tuple[str, float]] = set()
-        for p in winner_points:
-            p_vec = point_vec[p]
-            dominated = False
-            for q in datapoints:
-                if q == p:
-                    continue
-                q_vec = point_vec[q]
-                if all(qv >= pv for qv, pv in zip(q_vec, p_vec)) and any(
-                    qv > pv for qv, pv in zip(q_vec, p_vec)
-                ):
-                    dominated = True
-                    break
-            if not dominated:
-                pruned_winners.add(p)
-
-        for model, lr in pruned_winners:
-            selected_keys.add((task, model, lr))
-
-    return [
-        row
-        for row in rows
-        if (row["task"], row["model"], float(row["learning_rate"])) in selected_keys
-    ]
-
-
 def _parse_cli_bucket_end_digit(s: str) -> int:
     v = int(s.strip())
     if v < 0 or v > 9:
@@ -798,70 +495,15 @@ def _parse_cli_bucket_end_digit(s: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Build/update unified CSV from logs/**/summary*.txt and optionally list "
-            "models/results filtered by tasks and include patterns."
+            "Build/update summary CSV from logs/**/summary*.txt."
         )
     )
     repo_root = Path(__file__).resolve().parents[2]
     default_logs_root = repo_root / "logs"
-    default_csv = repo_root / "exports" / "all_summary_results.csv"
+    default_csv = repo_root / "exports" / "summary.csv"
 
     parser.add_argument("--logs-root", type=Path, default=default_logs_root)
     parser.add_argument("--csv", type=Path, default=default_csv)
-    parser.add_argument("--create", action="store_true")
-    
-    parser.add_argument(
-        "--task",
-        action="append",
-        default=[],
-        help=(
-            "Task filter for listing. Repeat flag or pass comma-separated list. "
-            "Example: --task bin_majority --task majority,mqar"
-        ),
-    )
-    parser.add_argument(
-        "--include",
-        action="append",
-        default=[],
-        help=(
-            "Exact model/lr filter for listing. Format: model or model:lr1,lr2 "
-            "(repeat flag for multiple models)."
-        ),
-    )
-    parser.add_argument(
-        "--remove-pattern",
-        action="append",
-        default=[],
-        help=(
-            "Pre-filter: drop rows that match any pattern.  Same short notation as "
-            "--include-pattern (comma = AND within one pattern).  Repeat flag for "
-            "multiple remove patterns (row removed if it matches any)."
-        ),
-    )
-    parser.add_argument(
-        "--include-pattern",
-        action="append",
-        default=[],
-        help=(
-            "Keep rows that match any pattern (OR across repeated flags).  Each pattern "
-            "uses comma-separated short tokens AND-ed against CSV columns, e.g. "
-            "'1l,lm,nope' (layers=1, arch=lm, NoPE).  No comma: structured token "
-            "then legacy model-string matching."
-        ),
-    )
-    parser.add_argument(
-        "--list-models",
-        action="store_true",
-        help="Print matching models and per-bin mean results from the CSV.",
-    )
-    parser.add_argument(
-        "--include-max-only",
-        action="store_true",
-        help=(
-            "When used with --list-models, keep only models that are max contributors "
-            "per task across bins (with dominated models removed)."
-        ),
-    )
     parser.add_argument(
         "--bucket-end-digit",
         action="append",
@@ -869,7 +511,7 @@ def main() -> int:
         type=_parse_cli_bucket_end_digit,
         default=None,
         help=(
-            "With --create: keep only rows whose bucket upper bound ends in this decimal digit "
+            "Keep only rows whose bucket upper bound ends in this decimal digit "
             "(ones place), e.g. 0 keeps 0-50 (50) and 51-100 (100); 9 keeps 25-49 (49). "
             "Repeat flag for multiple digits (OR). Omit to keep all buckets."
         ),
@@ -878,31 +520,12 @@ def main() -> int:
 
     be_digits = frozenset(args.bucket_end_digits) if args.bucket_end_digits else None
 
-    if args.create:
-        rows = build_or_update_csv(
-            logs_root=args.logs_root,
-            csv_path=args.csv,
-            bucket_end_digits=be_digits,
-        )
-        print(f"Wrote/updated CSV: {args.csv} ({len(rows)} rows)")
-        return 0
-
-    if not args.list_models:
-        return 0
-
-    rows = load_csv_rows(args.csv)
-    include_rules = [parse_include_rule(v) for v in args.include]
-    tasks = parse_tasks(args.task)
-    filtered_rows = filter_rows(
-        rows=rows,
-        tasks=tasks,
-        include_rules=include_rules,
-        include_patterns=args.include_pattern,
-        remove_patterns=args.remove_pattern,
+    rows = build_or_update_csv(
+        logs_root=args.logs_root,
+        csv_path=args.csv,
+        bucket_end_digits=be_digits,
     )
-    if args.include_max_only:
-        filtered_rows = _select_max_rows(filtered_rows)
-    print_models(filtered_rows)
+    print(f"Wrote/updated CSV: {args.csv} ({len(rows)} rows)")
     return 0
 
 

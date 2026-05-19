@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""DataFrame-first plotting from summary CSV.
+
+This script keeps plot aesthetics and legend naming consistent with
+``generate_plot.py`` while making selection logic explicit via pandas filters:
+
+* ``--keep column=v1,v2``          -> ``df[df[column].isin([...])]``
+* ``--remove column=v1,v2``        -> ``df[~df[column].isin([...])]``
+* ``--query "expr"``               -> ``df.query(expr)``
+* ``--exclude-query "expr"``       -> ``df[~df.query(expr).index]``
+
+Groups are built from ``--group-by`` columns and plotted via their max-winner
+datapoints per validation bin (same winner logic as ``generate_plot.py``).
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+from collections import defaultdict
+from pathlib import Path
+
+from plot_utils import (
+    _bucket_plot_x,
+    _bucket_sort_key_plot,
+    _bucket_upper_bound,
+    _dedupe_legend_labels,
+    _draw_x_shrink_marks,
+    _ordinal_bin_tick_labels,
+    _parse_x_axis_shrink,
+    _sample_std,
+    _signature_label,
+    _signature_x_ends,
+    _split_rows_by_bin_signature,
+    _x_data_to_plot_shrink,
+    legend_label_from_rows,
+    max_line_xy_for_winners,
+    select_max_winners_for_series,
+)
+from dataframe_query_utils import (
+    apply_keep_remove_filters,
+    apply_query_filters,
+    require_columns,
+)
+
+
+def _format_group_key(row: dict, group_by: list[str]) -> str:
+    if not group_by:
+        return f"dp:{row['model']}|{row['learning_rate']}"
+    return "grp:" + "|".join(f"{c}={row.get(c)}" for c in group_by)
+
+
+def _parse_custom_group_labels(raw: str) -> list[str]:
+    """Parse comma-separated labels, allowing quoted CSV-style values."""
+    if not raw.strip():
+        return []
+    parsed = next(csv.reader([raw], skipinitialspace=True), [])
+    return [p.strip() for p in parsed if p.strip()]
+
+
+def _group_label_from_sid(sid: str, fallback: str) -> str:
+    if sid.startswith("grp:"):
+        return sid[len("grp:") :]
+    return fallback
+
+
+def plot_task_df(
+    df,
+    *,
+    task: str,
+    output_path: Path,
+    title: str,
+    legend_loc: str,
+    group_by: list[str],
+    group_label_mode: str,
+    group_custom_labels: list[str],
+    max_aggregation: str,
+    x_ticks_mode: str,
+    x_tick_step: int,
+    x_axis_break: str | None,
+    num_bins: int | None,
+) -> None:
+    try:
+        import matplotlib as mpl
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        import seaborn as sns
+    except ModuleNotFoundError as e:
+        raise SystemExit(
+            "Plotting requires pandas, matplotlib, and seaborn. Install them first."
+        ) from e
+
+    df = df.copy()
+    df["task"] = df["task"].astype(str)
+    df = df[df["task"] == task]
+    if df.empty:
+        raise SystemExit(f"No rows left for task={task!r} after filtering.")
+
+    df["bucket"] = df["bucket"].astype(str)
+    df["bucket_upper"] = df["bucket"].map(_bucket_upper_bound)
+    df["learning_rate"] = df["learning_rate"].astype(float)
+    df["accuracy"] = df["accuracy"].astype(float)
+
+    if num_bins is not None:
+        cnt = (
+            df.groupby(["model", "learning_rate"])["bucket"]
+            .nunique()
+            .rename("num_bins")
+            .reset_index()
+        )
+        keep_dps = cnt[cnt["num_bins"] == num_bins][["model", "learning_rate"]]
+        df = df.merge(keep_dps, on=["model", "learning_rate"], how="inner")
+        if df.empty:
+            raise SystemExit(f"No rows left after --num-bins={num_bins}.")
+
+    require_columns(df, group_by, "--group-by")
+
+    # Keep one value per datapoint-bucket: max accuracy.
+    # Important: when grouping is active, include group-by columns in the key so
+    # runs from different groups (e.g. mkar_vocab_size=32 vs 128) never mix.
+    collapse_keys = ["model", "learning_rate", "bucket", *group_by]
+    dfc = (
+        df.groupby(collapse_keys, as_index=False)["accuracy"]
+        .max()
+        .copy()
+    )
+
+    filtered_rows = dfc.to_dict(orient="records")
+    if not filtered_rows:
+        raise SystemExit("No rows to plot after collapse/filtering.")
+
+    if x_ticks_mode == "bins" and x_axis_break is not None and str(x_axis_break).strip():
+        raise SystemExit("--x-axis-break is incompatible with --x-ticks bins.")
+
+    # Group-by series + split by identical bucket signatures.
+    series_id_to_rows: dict[str, list[dict]] = defaultdict(list)
+    ordered_sids: list[str] = []
+    seen_sids: set[str] = set()
+    for row in filtered_rows:
+        sid = _format_group_key(row, group_by)
+        if sid not in seen_sids:
+            seen_sids.add(sid)
+            ordered_sids.append(sid)
+        series_id_to_rows[sid].append(row)
+
+    if group_label_mode == "custom":
+        if not group_by:
+            raise SystemExit("--group-label-mode custom requires at least one --group-by column.")
+        if not group_custom_labels:
+            raise SystemExit("--group-label-mode custom requires --group-custom-labels.")
+        if len(group_custom_labels) != len(ordered_sids):
+            raise SystemExit(
+                f"--group-custom-labels count ({len(group_custom_labels)}) must match "
+                f"number of groups ({len(ordered_sids)}), in first-appearance order."
+            )
+        sid_to_custom_label = {
+            sid: group_custom_labels[i] for i, sid in enumerate(ordered_sids)
+        }
+    else:
+        sid_to_custom_label = {}
+
+    sub_series_rows: dict[tuple[str, frozenset[str]], list[dict]] = {}
+    for sid, sid_rows in series_id_to_rows.items():
+        for sig, sig_rows in _split_rows_by_bin_signature(sid_rows).items():
+            sub_series_rows[(sid, sig)] = sig_rows
+
+    def sub_key_sort(k: tuple[str, frozenset[str]]) -> tuple:
+        sid, sig = k
+        return (legend_label_from_rows(sub_series_rows[k]), sid, _signature_label(sig))
+
+    sub_keys = sorted(sub_series_rows.keys(), key=sub_key_sort)
+    if not sub_keys:
+        raise SystemExit("No sub-series to plot.")
+
+    base_labels = {sk: legend_label_from_rows(sub_series_rows[sk]) for sk in sub_keys}
+    sig_count_by_sid: dict[str, int] = defaultdict(int)
+    for sid, _sig in sub_keys:
+        sig_count_by_sid[sid] += 1
+
+    display_labels: dict[tuple[str, frozenset[str]], str] = {}
+    for sk in sub_keys:
+        sid, sig = sk
+        if group_label_mode == "model":
+            base = base_labels[sk]
+        elif group_label_mode == "group":
+            base = _group_label_from_sid(sid, base_labels[sk])
+        else:  # custom
+            base = sid_to_custom_label.get(sid, base_labels[sk])
+        if sig_count_by_sid[sid] > 1:
+            display_labels[sk] = f"{base} [ends {_signature_label(sig)}]"
+        else:
+            display_labels[sk] = base
+
+    id_strs = [f"{sid}::{_signature_label(sig)}" for sid, sig in sub_keys]
+    deduped = _dedupe_legend_labels(
+        id_strs, {id_strs[i]: display_labels[sub_keys[i]] for i in range(len(sub_keys))}
+    )
+    sub_key_to_display = {sub_keys[i]: deduped[id_strs[i]] for i in range(len(sub_keys))}
+
+    series_to_bucket_vals: dict[tuple[tuple[str, frozenset[str]], str], list[float]] = defaultdict(list)
+    series_to_datapoints: dict[tuple[str, frozenset[str]], set[tuple[str, float]]] = defaultdict(set)
+    series_to_dcv: dict[
+        tuple[str, frozenset[str]],
+        dict[tuple[str, float, str], list[float]],
+    ] = {}
+
+    for sk in sub_keys:
+        local_dcv: dict[tuple[str, float, str], list[float]] = defaultdict(list)
+        for row in sub_series_rows[sk]:
+            dp = (str(row["model"]), float(row["learning_rate"]))
+            b = str(row["bucket"])
+            local_dcv[(dp[0], dp[1], b)].append(float(row["accuracy"]))
+            series_to_datapoints[sk].add(dp)
+        # Match legacy behavior: one value per datapoint-bucket, keep max.
+        for key in list(local_dcv.keys()):
+            vals = local_dcv[key]
+            local_dcv[key] = [max(vals)] if vals else []
+        series_to_dcv[sk] = local_dcv
+        for (_m, _lr, b), vals in local_dcv.items():
+            if vals:
+                series_to_bucket_vals[(sk, b)].append(vals[0])
+
+    all_bucket_names = {str(r["bucket"]) for r in filtered_rows}
+    x_tick_ends = sorted({int(x) for b in all_bucket_names if (x := _bucket_plot_x(b)) is not None})
+    if not x_tick_ends:
+        raise SystemExit("No parseable bucket ranges (expected bucket names like '0-50').")
+
+    def series_buckets(sk: tuple[str, frozenset[str]]) -> list[str]:
+        return sorted({b for (k, b) in series_to_bucket_vals if k == sk}, key=_bucket_sort_key_plot)
+
+    use_bins = x_ticks_mode == "bins"
+
+    def bucket_x(sk: tuple[str, frozenset[str]], b: str) -> float | None:
+        if use_bins:
+            return float(series_buckets(sk).index(b))
+        return _bucket_plot_x(b)
+
+    if use_bins:
+        ordinal_tick_labels = _ordinal_bin_tick_labels(sub_keys, series_buckets)
+        num_ordinal_bins = len(ordinal_tick_labels)
+    else:
+        ordinal_tick_labels = []
+        num_ordinal_bins = 0
+
+    # Modes:
+    # - pareto_mean: keep Pareto max-contributor datapoints, then mean+std per bin.
+    # - bin_max: simple maximum per bin across all datapoints in the group/sub-series.
+    max_series: dict[tuple[str, frozenset[str]], tuple[str, list[float], list[float], list[float]]] = {}
+    for sk in sub_keys:
+        max_label = f"{sub_key_to_display[sk]}"
+        datapoints = series_to_datapoints.get(sk, set())
+        if not datapoints:
+            continue
+
+        mx: list[float]
+        mmean: list[float]
+        mstd: list[float]
+        if max_aggregation == "pareto_mean":
+            sig = sk[1]
+            ends_for_sig = _signature_x_ends(sig)
+            local_dcv = series_to_dcv.get(sk, {})
+            pruned, _ = select_max_winners_for_series(
+                datapoints,
+                local_dcv,
+                all_ends_override=ends_for_sig or x_tick_ends,
+            )
+            if not pruned:
+                continue
+            mx, mmean, mstd = max_line_xy_for_winners(
+                pruned,
+                ends_for_sig or x_tick_ends,
+                local_dcv,
+                fallback_dps=datapoints,
+            )
+        else:  # bin_max
+            buckets_sl = series_buckets(sk)
+            if not buckets_sl:
+                continue
+            mx, mmean, mstd = [], [], []
+            for b in buckets_sl:
+                x = bucket_x(sk, b)
+                if x is None:
+                    continue
+                vals = series_to_bucket_vals.get((sk, b), [])
+                if not vals:
+                    continue
+                mx.append(float(x))
+                mmean.append(max(vals) * 100.0)
+                mstd.append(0.0)
+
+        if use_bins:
+            mx = [float(i) for i in range(len(mx))]
+        max_series[sk] = (max_label, mx, mmean, mstd)
+
+    x_max_data = float(max(x_tick_ends))
+    if use_bins:
+        x_max_data = float(max(0, num_ordinal_bins - 1))
+    else:
+        for sk in sub_keys:
+            for b in series_buckets(sk):
+                if (x_b := _bucket_plot_x(b)) is not None:
+                    x_max_data = max(x_max_data, float(x_b))
+        for _lbl, mx_pts, _, _ in max_series.values():
+            if mx_pts:
+                x_max_data = max(x_max_data, max(mx_pts))
+
+    all_plotted_x: list[float] = []
+    for sk in sub_keys:
+        if sk not in max_series:
+            continue
+        _lbl, mx, _m, _s = max_series[sk]
+        all_plotted_x.extend(float(x) for x in mx)
+    min_plotted_x = min(all_plotted_x) if all_plotted_x else 0.0
+    shrink_to = _parse_x_axis_shrink(x_axis_break, min_plotted_x)
+
+    def xplt(x: float) -> float:
+        if shrink_to is None:
+            return x
+        return _x_data_to_plot_shrink(x, min_plotted_x, shrink_to)
+
+    if use_bins:
+        pad = max(0.08 * max(x_max_data + 1.0, 1.0), 0.42)
+        x_hi_data = x_max_data + pad
+    else:
+        pad = max(x_max_data * 0.02, 1.0)
+        x_hi_data = x_max_data + pad
+    x_hi_plot = xplt(x_hi_data)
+
+    mpl.rcParams["axes.titleweight"] = "bold"
+    sns.set_theme(style="whitegrid", palette="dark6", context="talk", font_scale=1.4)
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.set_title(title)
+    ax.tick_params(axis="both", which="major", width=2.0, length=8)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.8)
+
+    for sk in sub_keys:
+        if sk not in max_series:
+            continue
+        label, mx, max_means, max_stds = max_series[sk]
+        mx_plot = [xplt(x) for x in mx]
+        ax.errorbar(
+            mx_plot,
+            max_means,
+            yerr=max_stds,
+            marker="o",
+            linestyle="-",
+            linewidth=3.2,
+            markersize=10.0,
+            markeredgewidth=1.8,
+            capsize=7,
+            elinewidth=2.4,
+            capthick=2.4,
+            label=label,
+        )
+
+    if use_bins:
+        lx = float(min(all_plotted_x)) if all_plotted_x else 0.0
+        rx = float(max(all_plotted_x)) if all_plotted_x else float(x_hi_plot)
+        ax.set_xlim(lx - 0.55, max(float(x_hi_plot), rx + 0.55))
+    else:
+        ax.set_xlim(0.0, x_hi_plot)
+
+    if shrink_to is None:
+        if use_bins:
+            ax.set_xticks([float(i) for i in range(num_ordinal_bins)])
+            ax.set_xticklabels(ordinal_tick_labels if ordinal_tick_labels else [""])
+        elif x_ticks_mode == "ends":
+            ax.set_xticks([float(e) for e in x_tick_ends])
+            ax.set_xticklabels([f"<{e}" for e in x_tick_ends])
+        elif x_ticks_mode == "regular":
+            step = max(int(x_tick_step), 1)
+            hi = int(math.ceil(x_hi_data / step) * step)
+            reg_ticks = [float(x) for x in range(0, hi + 1, step)]
+            ax.set_xticks(reg_ticks)
+            ax.set_xticklabels([str(int(t)) if t == int(t) else str(t) for t in reg_ticks])
+    else:
+        if use_bins:
+            ax.set_xticks([float(i) for i in range(num_ordinal_bins)])
+            ax.set_xticklabels(ordinal_tick_labels if ordinal_tick_labels else [""])
+        elif x_ticks_mode == "ends":
+            tick_data = sorted({float(e) for e in x_tick_ends})
+            if not tick_data:
+                tick_data = [0.0]
+            elif tick_data[0] > 0:
+                tick_data = [0.0, *tick_data]
+            tick_plot = [xplt(t) for t in tick_data]
+            labels = ["0" if t <= 0 else f"<{int(t)}" for t in tick_data]
+            ax.set_xticks(tick_plot)
+            ax.set_xticklabels(labels)
+        elif x_ticks_mode == "regular":
+            step = max(int(x_tick_step), 1)
+            hi_d = int(math.ceil(x_hi_data / step) * step)
+            reg_data = [float(x) for x in range(0, hi_d + 1, step)]
+            tick_plot = [xplt(t) for t in reg_data]
+            ax.set_xticks(tick_plot)
+            ax.set_xticklabels([str(int(t)) if t == int(t) else str(t) for t in reg_data])
+        _draw_x_shrink_marks(ax, shrink_to, x_hi_plot)
+
+    ax.set_xlabel("Validation bin" if use_bins else "Validation length (upper bound)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_ylim(-10.0, 110.0)
+    ax.grid(alpha=0.35, linewidth=1.2)
+    if legend_loc != "none":
+        ax.legend(loc=legend_loc, fontsize=16, frameon=False, markerscale=1.2)
+    fig.tight_layout()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def _dump_selected_rows(df, *, group_by: list[str], selected_cols: list[str]) -> None:
+    cols = selected_cols or ["task", *group_by, "model", "learning_rate", "bucket", "accuracy"]
+    require_columns(df, cols, "--selected-cols")
+    out_df = df[cols].drop_duplicates()
+    sort_cols = [c for c in ("task", "bucket", "model", "learning_rate", "accuracy") if c in cols]
+    if sort_cols:
+        out_df = out_df.sort_values(sort_cols)
+    print(out_df.to_string(index=False))
+    print(f"\nSelected rows: {len(out_df)}")
+
+
+def main() -> int:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("This script requires pandas. Install it first.") from e
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Create plots from CSV via pandas DataFrame filtering. "
+            "Use --keep/--remove for column value filters and --query/--exclude-query "
+            "for standard pandas expressions."
+        )
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    default_csv = repo_root / "exports" / "summary_results_9bins.csv"
+    default_plot_dir = repo_root / "exports" / "plots"
+
+    parser.add_argument("--input-csv", "--csv", dest="input_csv", type=Path, default=default_csv)
+    parser.add_argument("--task", type=str, required=True, help="Task value from CSV task column.")
+    parser.add_argument(
+        "--output",
+        "--plot-path",
+        dest="output_path",
+        type=Path,
+        default=None,
+        help="Output path (default: exports/plots/<task>_csv_df.png).",
+    )
+    parser.add_argument("--title", type=str, default=None, help="Plot title (default: task).")
+    parser.add_argument(
+        "--legend-loc",
+        type=str,
+        default="best",
+        choices=[
+            "best", "upper right", "upper left", "lower left", "lower right",
+            "right", "center left", "center right", "lower center",
+            "upper center", "center", "none",
+        ],
+    )
+    parser.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        help="Keep rows by exact column values: column=v1,v2 (repeatable).",
+    )
+    parser.add_argument(
+        "--remove",
+        action="append",
+        default=[],
+        help="Drop rows by exact column values: column=v1,v2 (repeatable).",
+    )
+    parser.add_argument(
+        "--query",
+        action="append",
+        default=[],
+        help="Keep rows matching pandas query expression (repeatable, AND across uses).",
+    )
+    parser.add_argument(
+        "--exclude-query",
+        action="append",
+        default=[],
+        help="Drop rows matching pandas query expression (repeatable).",
+    )
+    parser.add_argument(
+        "--group-by",
+        action="append",
+        default=[],
+        help=(
+            "Column to group datapoints by (repeatable). "
+            "Examples: --group-by arch --group-by pe. "
+            "If omitted, each (model, learning_rate) is its own group."
+        ),
+    )
+    parser.add_argument(
+        "--dump-selected",
+        action="store_true",
+        help=(
+            "Print selected rows/columns (query_summary_df-style) after filtering "
+            "and before plotting."
+        ),
+    )
+    parser.add_argument(
+        "--selected-cols",
+        action="append",
+        default=[],
+        help=(
+            "Columns to print with --dump-selected (repeatable). "
+            "Default: task, --group-by cols, model,learning_rate,bucket,accuracy."
+        ),
+    )
+    parser.add_argument(
+        "--dump-selected-only",
+        action="store_true",
+        help="Print selected rows and exit without generating a plot.",
+    )
+    parser.add_argument(
+        "--group-label-mode",
+        choices=("model", "group", "custom"),
+        default="model",
+        help=(
+            "Legend base label mode per group: "
+            "model (existing compact model label), "
+            "group (column=value pairs from --group-by), "
+            "custom (labels from --group-custom-labels)."
+        ),
+    )
+    parser.add_argument(
+        "--group-custom-labels",
+        type=str,
+        default="",
+        help=(
+            'CSV-style comma-separated custom labels for groups in first-appearance order, '
+            'used when --group-label-mode=custom. Example: '
+            '--group-custom-labels "Hybrid,SSM,Transformer".'
+        ),
+    )
+    parser.add_argument(
+        "--max-aggregation",
+        choices=("pareto_mean", "bin_max", "mean", "max"),
+        default="pareto_mean",
+        help=(
+            "How to compute grouped max series: "
+            "pareto_mean = Pareto winner selection, then mean+std over winner runs; "
+            "bin_max = direct maximum within each bin across all grouped datapoints. "
+            "Aliases: mean->pareto_mean, max->bin_max."
+        ),
+    )
+    parser.add_argument("--num-bins", type=int, default=None, metavar="N")
+    parser.add_argument(
+        "--x-ticks",
+        dest="x_ticks_mode",
+        choices=("ends", "regular", "bins"),
+        default="bins",
+    )
+    parser.add_argument("--x-tick-step", type=int, default=10)
+    parser.add_argument("--x-axis-break", type=str, default=None, metavar="POS")
+    args = parser.parse_args()
+
+    if args.x_tick_step < 1:
+        raise SystemExit("--x-tick-step must be >= 1.")
+    if args.num_bins is not None and args.num_bins < 1:
+        raise SystemExit("--num-bins must be >= 1.")
+    custom_labels = _parse_custom_group_labels(args.group_custom_labels)
+    if args.group_label_mode != "custom" and custom_labels:
+        raise SystemExit("--group-custom-labels is only valid with --group-label-mode custom.")
+    if args.max_aggregation == "mean":
+        args.max_aggregation = "pareto_mean"
+    elif args.max_aggregation == "max":
+        args.max_aggregation = "bin_max"
+
+    df = pd.read_csv(args.input_csv)
+    if df.empty:
+        raise SystemExit(f"No CSV rows found at {args.input_csv}.")
+
+    df = apply_keep_remove_filters(df, args.keep, args.remove)
+    df = apply_query_filters(df, args.query, args.exclude_query)
+    if df.empty:
+        raise SystemExit("No rows left after DataFrame filtering.")
+    if args.dump_selected or args.dump_selected_only:
+        _dump_selected_rows(df, group_by=args.group_by, selected_cols=args.selected_cols)
+        if args.dump_selected_only:
+            return 0
+
+    plot_path = args.output_path or (default_plot_dir / f"{args.task}_csv_df.png")
+    title = args.title or args.task
+    plot_task_df(
+        df,
+        task=args.task,
+        output_path=plot_path,
+        title=title,
+        legend_loc=args.legend_loc,
+        group_by=args.group_by,
+        group_label_mode=args.group_label_mode,
+        group_custom_labels=custom_labels,
+        max_aggregation=args.max_aggregation,
+        x_ticks_mode=args.x_ticks_mode,
+        x_tick_step=args.x_tick_step,
+        x_axis_break=args.x_axis_break,
+        num_bins=args.num_bins,
+    )
+    print(f"Wrote plot: {plot_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

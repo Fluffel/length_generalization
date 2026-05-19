@@ -447,7 +447,8 @@ class MQARWordProblemDataset(CustomDataset):
             max_test_length: max content length for position ID offset (-1 for eval).
             key_size: |K|, number of distinct keys.
             monoid_size: |M|, number of monoid elements.
-            query_fraction: fraction of content length devoted to queries.
+            query_fraction_upper: upper bound for the fraction of content length devoted to queries.
+            query_fraction_lower: lower bound for the fraction of content length devoted to queries.
             op: binary monoid operation on element indices (0..M-1) -> (0..M-1).
             identity: index of the monoid identity element.
         """
