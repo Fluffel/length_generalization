@@ -1,108 +1,182 @@
-### Guidelines to reproduce the experiments for algorithmic tasks
+### Running code + convenience scripts
 
-1. Run `python language_modeling_train.py --task [TASK]` to sweep hyperparamters (check the code for possible tasks), and check the results in corresponding output folder (`lm-out-new-[TASK]`), select the optimal set of hyperparamters according to section E.3, and put it into the dictionary `task_arch` in `run_multiple_seeds.py`. Run this script for one task at a time. It runs experiments for APE by default, add `--nope` to run for NoPE models. 
-2. After getting the best configuration, use `python run_multiple_seeds.py --tasks [TASK1] [TASK2] [TASK3]` to run each task repeatedly with multiple random seeds, it will generate files in foler `lm-out-new-multi-run`, you can check the average accuracies there. You can run multiple tasks together. Again, add `--nope` if you want to run for NoPE models. You can also run experiments with the regularizer activated, by setting `--regularize [VALUE]`.
+## Where code lives and what to edit
 
-#### Inspecting Datasets
+- `algorithmic/language_modeling_train.py`  
+  Main training/eval implementation (dataset construction, model build, trainer/eval loop).
 
-Datasets can be inspected with `convenience_scripts/print_dataset_words.py`. Example:
+- `algorithmic/utils.py`  
+  Shared config dataclasses/default config factories (`RunConfig`, default sweeps).
+
+- `algorithmic/run_scripts/language_modeling_train_shared.py`  
+  Shared CLI parser and argument-to-config mapping.
+
+- `algorithmic/run_scripts/language_modeling_train_hybrid.py`  
+  Hybrid run entrypoint with architecture sweep definition.
+
+### Parameter control: where to change what
+
+- **Architecture control (edit code):**  
+  Adjust architecture sweep in `run_scripts/language_modeling_train_hybrid.py` inside `build_architectures(...)` (layers/heads/d_model/dropout/lr/etc).
+
+- **Most experiment controls (CLI args):**  
+  Pass via script arguments parsed in `run_scripts/language_modeling_train_shared.py`, e.g.:
+  - task/seeds: `--task`, `--seeds`
+  - train schedule: `--train-steps`, `--warmup-steps`, `--eval-steps`, `--logging-steps`
+  - length setup: `--train-length-range`
+  - model toggles: `--nope`, `--noln`, `--use-olmo`, `--ssm-kernel`, `--hybrid-layer-pattern`, `--regularize`
+  - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--key_size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`
+
+### Training example
+
+```bash
+python algorithmic/run_scripts/language_modeling_train_hybrid.py \
+  --task mkar \
+  --seeds 5 \
+  --train-length-range 0,50 \
+  --nope \
+  --key-len 4 \
+  --mkar-vocab-size 128
+```
+
+## Dataset inspection helper
+
+Script: `convenience_scripts/print_dataset_words.py`
+
+What it does:
+- Prints generated samples token-by-token for quick dataset debugging
+- Supports two modes:
+  - `--mode class`: instantiate a dataset class directly
+  - `--mode build`: call `build_datasets(run_config)` and inspect train/test splits
+
+Direct class example:
 
 ```bash
 python algorithmic/convenience_scripts/print_dataset_words.py \
+  --mode class \
+  --module algorithmic.dataset_generators \
   --dataset MajorityDataset \
   --dataset-kwargs '{"length_range":[20,30],"max_test_length":100}'
 ```
 
-#### Aggregating summary results and plotting
-
-Two scripts (repo root is three levels up from `algorithmic/convenience_scripts/`):
-
-- **`convenience_scripts/generate_summary_csv.py`** — scan `logs/**/summary*.txt`, merge into one CSV, optional CLI listing.
-- **`convenience_scripts/generate_summary_plots.py`** — read that CSV and plot one task.
-
-##### Unified CSV (`generate_summary_csv.py`)
-
-- **Input:** `logs/<task>/summary*.txt` (default `--logs-root` is repo `logs/`).
-- **Output:** `exports/all_summary_results.csv` by default (`--csv` to override).
-- Each summary line can list **any** `eval_len<N>-<M>_acc:` buckets; they are stored as plain ranges in the `bucket` column (e.g. `0-50`, `101-150`, `0-24`).
-- Extra columns parse the model string: `arch`, `layers`, `heads`, `d_model`, `dropout`, `mlp_size`, `kernel`, `pe`, `ln`, `train_steps_k`, `layer_order`.
-- **`--bucket-end-digit D`** (with **`--create` only**, repeat for several digits): drop rows unless the bucket **upper** bound’s ones digit is `D` (e.g. `0` keeps `0-50` and `51-100`; `9` keeps `25-49`).
+Build-datasets example:
 
 ```bash
-python algorithmic/convenience_scripts/generate_summary_csv.py --create
-python algorithmic/convenience_scripts/generate_summary_csv.py --csv exports/all_results.csv --create
-python algorithmic/convenience_scripts/generate_summary_csv.py --create --bucket-end-digit 0 --bucket-end-digit 5
+python algorithmic/convenience_scripts/print_dataset_words.py \
+  --mode build \
+  --module algorithmic.dataset_generators \
+  --task parity \
+  --split train \
+  --num 5
 ```
 
-##### Pattern notation (CSV listing and plots)
+## Convenience scripts (new workflow)
 
-Short tokens are matched against **CSV columns** (comma **inside** one pattern = AND; repeat `--include-pattern` = OR). Examples: `1l` (layers), `lm` / `hyb` / `ssm` (arch), `nope` / `pe`, `s4` (kernel), `0.001lr` (learning rate), `0-50` (bucket). A pattern **without** commas falls back to legacy model-string token matching after a single-token structured check.
+### 1) Build a unified summary CSV
 
-- **`--remove-pattern`** (repeatable): drop rows that match **any** of these patterns (applied before includes).
-- **`--include-pattern`** (repeatable): if any are given, keep rows that match **any** pattern **or** satisfy `--include` (exact `model` / `model:lr1,lr2`).
+Script: `convenience_scripts/generate_summary_csv.py`
 
-Listing:
+What it does:
+- Scans `logs/**/summary*.txt`
+- Parses model/task metadata and evaluation buckets
+- Writes one flat CSV
+
+Default paths:
+- Logs root: `logs/`
+- Output CSV: `exports/summary.csv`
+
+Example:
 
 ```bash
-python algorithmic/convenience_scripts/generate_summary_csv.py --list-models --task bin_majority
+python algorithmic/convenience_scripts/generate_summary_csv.py
+```
 
+Custom output:
+
+```bash
 python algorithmic/convenience_scripts/generate_summary_csv.py \
-  --list-models \
-  --task bin_majority --task majority,mqar \
-  --include-pattern ssm \
-  --include-pattern 1l,1h1
-
-python algorithmic/convenience_scripts/generate_summary_csv.py \
-  --list-models \
-  --task mqar \
-  --remove-pattern lm \
-  --include-pattern ssm \
-  --include-max-only
+  --logs-root logs \
+  --csv exports/all_spec_task.csv
 ```
 
-`--include-max-only` with `--list-models` keeps only “max contributor” `(model, lr)` pairs per task (per-bin maxima, then non-dominated across bins). Listing prints one line per `(task, model, learning_rate)` with **all** bucket columns present in the filtered rows (`len<range>=…`).
+### 2) Query the CSV with DataFrame filters
 
-##### Plots (`generate_summary_plots.py`)
+Script: `convenience_scripts/query_summary_df.py`
 
-- **`--task`** (required): must match the CSV **`task` column exactly** (usually the `logs/<name>/` folder name, e.g. `parity`, `sort`, `unique_copy`). Same comma/repeat syntax as `generate_summary_csv.py`; **one task per plot invocation** (not a comma-separated list of several tasks).
-- **`--input-csv` / `--csv`:** CSV path (default `exports/all_summary_results.csv`). Use the **same file** you passed to `generate_summary_csv.py` when debugging “listing finds rows but plot does not.”
-- **`--output` / `--plot-path`:** image path (default `exports/plots/<task>.png`).
-- **`--include-pattern` / `--remove-pattern`:** same semantics as the CSV script (plot script has **no** `--include`; use patterns or rely on task-only filter).
-- **`--group-pattern`:** **after** `--task` / include / remove filtering, rows matching each pattern merge into plotted series (this flag **never** drops CSV rows). Bin sets must be **nested** to stay one line; **incomparable** grids split with a warning. **Different** patterns (hyb vs ssm) are separate series. **`--group-pattern '*'`** pools leftovers under the same nesting rule.
-- **Legend:** compact training-style string rebuilt with `parse_model_spec` (arch / hybrid order / kernel / `Nl` `Nh` `Nd` / dropout / mlp / pe–ln flags / `stp`–`k` / learning rate)—not the raw CSV `model` cell. Groups with several configs join with ` | `.
-- **X-axis:** data positions are **bin upper bounds** (e.g. bucket `0-49` → x = 49); axis starts at 0. **`--x-ticks ends`** (default): tick at each bin end with `<N>` labels. **`--x-ticks regular --x-tick-step 10`:** evenly spaced numeric ticks.
-- **`--include-max`:** for **each** plotted series, add a dotted `max:…` line (same color as that series when solids are drawn). Winners use a **shared** bin-end grid across the figure, **finest** (narrowest) bin at each end, then Pareto pruning **within** that series.
-- **`--include-max-only`:** only those dotted max lines (one per series), no solid lines.
-- Duplicate `(series, bucket)` values in the CSV are aggregated with **mean** and sample **std** as error bars.
+Supported filtering:
+- `--keep column=v1,v2`
+- `--remove column=v1,v2`
+- `--query "pandas_expr"`
+- `--exclude-query "pandas_expr"`
 
-Example — three architectures with MLP, three grouped lines, max-only:
+Output behavior:
+- Prints filtered rows to stdout
+- By default shows datapoint columns: `task`, `model`, `bucket`, `accuracy`
+- Add extra columns with repeatable `--show-cols`
+
+Example:
 
 ```bash
-python algorithmic/convenience_scripts/generate_plot.py \
-  --input-csv exports/all_results.csv \
-  --task unique_copy \
-  --include-pattern hyb,mlp \
-  --include-pattern ssm,mlp \
-  --include-pattern lm,mlp \
-  --group-pattern hyb,mlp \
-  --group-pattern ssm,mlp \
-  --group-pattern lm,mlp \
-  --include-max-only
+python algorithmic/convenience_scripts/query_summary_df.py \
+  --input-csv exports/all_spec_task.csv \
+  --keep task=mqar,mkar \
+  --keep arch=hyb \
+  --query "bucket == '101-150' and accuracy >= 0.9" \
+  --show-cols learning_rate \
+  --show-cols mkar_vocab_size
 ```
 
-Example — solids + per-series max, wildcard rest group:
+### 3) Plot directly from DataFrame-filtered rows
+
+Script: `convenience_scripts/generate_plot_df.py`
+
+Supported filtering (same semantics as query script):
+- `--keep column=v1,v2`
+- `--remove column=v1,v2`
+- `--query "pandas_expr"`
+- `--exclude-query "pandas_expr"`
+
+Key plotting controls:
+- `--task <task>` (required)
+- `--group-by <column>` (repeatable)
+- `--group-label-mode {model,group,custom}`
+- `--group-custom-labels "Label A,Label B,..."`
+- `--max-aggregation {pareto_mean,bin_max}` (also accepts aliases `mean`/`max`)
+- `--num-bins N`
+- `--x-ticks {bins,ends,regular}`
+- `--x-tick-step N`
+- `--x-axis-break <number|auto>`
+
+Example:
 
 ```bash
-python algorithmic/convenience_scripts/generate_plot.py \
-  --task sort \
-  --output exports/plots/sort_custom.png \
-  --title "Sort (selected)" \
-  --include-pattern 4l \
-  --include-pattern 8l \
-  --include-pattern hyb \
-  --group-pattern ssm,16d \
-  --group-pattern ssm,256d \
-  --group-pattern hyb \
-  --group-pattern '*' \
-  --include-max
+python algorithmic/convenience_scripts/generate_plot_df.py \
+  --input-csv exports/all_spec_task.csv \
+  --task mkar \
+  --keep arch=hyb \
+  --group-by mkar_vocab_size \
+  --group-label-mode group \
+  --x-ticks bins \
+  --output exports/plots/mkar_vocab_size.svg
 ```
+
+Custom group labels:
+
+```bash
+python algorithmic/convenience_scripts/generate_plot_df.py \
+  --input-csv exports/all_spec_task.csv \
+  --task selective_copy \
+  --keep arch=hyb \
+  --group-by pe \
+  --group-label-mode custom \
+  --group-custom-labels "With PE,No PE"
+```
+
+## Shared helper modules
+
+- `convenience_scripts/dataframe_query_utils.py`  
+  Shared filter parsing/application utilities used by `query_summary_df.py` and
+  `generate_plot_df.py`.
+
+- `convenience_scripts/plot_utils.py`  
+  Shared plotting/statistics/legend helper functions used by `generate_plot_df.py`.
