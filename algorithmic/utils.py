@@ -98,6 +98,61 @@ def create_hybrid_config(tokenizer, n_positions: int, config: RunConfig, arch: A
             )
 
 @dataclass
+class CurriculumConfig:
+    """Curriculum learning schedule over the training sequence length.
+
+    Training proceeds in ``num_steps`` stages. Stage ``i`` (0-indexed) trains on a
+    ``step_size``-wide *window* of lengths, sliding forward each stage rather than
+    growing from 0: ``(0, step_size - 1)``, then ``(step_size, 2 * step_size - 1)``,
+    then ``(2 * step_size, 3 * step_size - 1)``, etc. Each stage runs for
+    ``steps_per_stage`` trainer steps (or fewer if solved early), after which the
+    window shifts forward by ``step_size`` for the next stage. Evaluation at the end
+    of each stage covers 1x, 2x, and 3x of that stage's cumulative length reached so
+    far (mirroring ``RunConfig.test_length_ranges`` but recomputed per stage instead
+    of once for the whole run) — e.g. stage 1 (cumulative length 20) evaluates at
+    (0,19), (20,39), (40,59), independent of the narrower (10,19) window it actually
+    trains on.
+
+    When set on ``RunConfig``, this replaces ``train_length_range`` /
+    ``test_length_ranges`` / ``num_test_bins`` as the source of truth for
+    training and evaluation lengths.
+    """
+
+    num_steps: int
+    step_size: int
+    steps_per_stage: int
+
+    def stage_size(self, stage_idx: int) -> int:
+        """Cumulative max length reached by stage ``stage_idx`` (0-indexed); used for eval bins."""
+        assert 0 <= stage_idx < self.num_steps
+        return self.step_size * (stage_idx + 1)
+
+    def stage_train_range(self, stage_idx: int) -> tuple[int, int]:
+        """Train window for stage ``stage_idx``: a ``step_size``-wide slice, not
+        cumulative from 0. E.g. step_size=10 -> stage 0 trains on (0,9), stage 1 on
+        (10,19), stage 2 on (20,29), ...
+        """
+        size = self.stage_size(stage_idx)
+        prev_size = self.stage_size(stage_idx - 1) if stage_idx > 0 else 0
+        return (prev_size, size - 1)
+
+    def stage_test_ranges(self, stage_idx: int) -> list[tuple[int, int]]:
+        """1x, 2x, 3x length bins for the given stage, e.g. size=10 -> [(0,9),(10,19),(20,29)]."""
+        size = self.stage_size(stage_idx)
+        return [(0, size - 1), (size, 2 * size - 1), (2 * size, 3 * size - 1)]
+
+    @property
+    def max_steps(self) -> int:
+        """Total trainer steps across all stages."""
+        return self.num_steps * self.steps_per_stage
+
+    @property
+    def max_test_length(self) -> int:
+        """Longest length needed anywhere in the curriculum (last stage's 3x bin)."""
+        return 3 * self.stage_size(self.num_steps - 1)
+
+
+@dataclass
 class ArchSlot:
     """One architecture + optimizer entry in a sweep."""
 
@@ -139,6 +194,10 @@ class RunConfig:
     num_test_bins: int = 3
     batch_size: int = 64
     test_num: int = 2000
+
+    # When set, curriculum learning is used and train_length_range/test_length_ranges/
+    # num_test_bins above are ignored (see CurriculumConfig for details).
+    curriculum: Optional["CurriculumConfig"] = None
 
     use_nope: bool = False
     # If true, use olmo_core TransformerConfig-backed builders instead of local GPT2/S4/Mamba ones.

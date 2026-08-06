@@ -822,120 +822,122 @@ class EvalDataset(Dataset):
         return len(self.data)
 
 
-def build_datasets(run_config: RunConfig):
-    train_length_range = run_config.train_length_range
-    test_length_ranges = run_config.test_length_ranges
-    max_test_length = test_length_ranges[-1][1]
-    test_num = run_config.test_num
+def _make_task_dataset(
+    run_config: RunConfig,
+    length_range: tuple[int, int],
+    max_test_length: int,
+    add_positional_offset: bool,
+) -> CustomDataset:
+    """Instantiate the dataset class for ``run_config.task`` over an arbitrary length range.
+
+    Factored out of ``build_datasets`` so curriculum learning (which needs fresh
+    datasets for many different, dynamically-computed length ranges) can reuse the
+    exact same per-task construction logic instead of duplicating it.
+    """
     task = run_config.task
 
     match task:
         case "bin_majority":
-            train_dataset = BinaryMajorityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    BinaryMajorityDataset(r, max_test_length, add_positional_offset=False),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
+            return BinaryMajorityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "majority":
-            train_dataset = MajorityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(MajorityDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return MajorityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "bin_majority_interleave":
-            train_dataset = BinaryMajorityInterleaveDataset(train_length_range, max_test_length, period=3)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    BinaryMajorityInterleaveDataset(r, max_test_length, period=3, add_positional_offset=False),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
+            return BinaryMajorityInterleaveDataset(
+                length_range, max_test_length, period=3, add_positional_offset=add_positional_offset
+            )
         case "unique_copy":
-            train_dataset = UniqueCopyDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(UniqueCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return UniqueCopyDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "repeat_copy":
-            train_dataset = RepeatCopyDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(RepeatCopyDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return RepeatCopyDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "sort":
-            train_dataset = SortDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(SortDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return SortDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "parity":
-            train_dataset = ParityDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(ParityDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return ParityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "addition":
-            train_dataset = AdditionDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(AdditionDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return AdditionDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "mqar":
-            train_dataset = MQARWordProblemDataset(
-                train_length_range,
+            return MQARWordProblemDataset(
+                length_range,
                 max_test_length,
+                add_positional_offset=add_positional_offset,
                 key_size=run_config.key_size,
                 query_fraction_upper=run_config.query_fraction_upper,
                 query_fraction_lower=run_config.query_fraction_lower,
                 monoid_type=run_config.monoid,
                 monoid_n=run_config.monoid_n,
             )
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    MQARWordProblemDataset(
-                        r,
-                        max_test_length,
-                        add_positional_offset=False,
-                        key_size=run_config.key_size,
-                        query_fraction_upper=run_config.query_fraction_upper,
-                        query_fraction_lower=run_config.query_fraction_lower,
-                        monoid_type=run_config.monoid,
-                        monoid_n=run_config.monoid_n,
-                    ),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
         case "flipflop":
-            train_dataset = FlipFlopDataset(train_length_range, max_test_length)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(FlipFlopDataset(r, max_test_length, add_positional_offset=False), test_num)
-                for r in test_length_ranges
-            }
+            return FlipFlopDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "selective_copy":
-            train_dataset = SelectiveCopyDataset(train_length_range, max_test_length, marker_vocab_size=run_config.marker_vocab_size)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    SelectiveCopyDataset(r, max_test_length, add_positional_offset=False, marker_vocab_size=run_config.marker_vocab_size),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
+            return SelectiveCopyDataset(
+                length_range,
+                max_test_length,
+                add_positional_offset=add_positional_offset,
+                marker_vocab_size=run_config.marker_vocab_size,
+            )
         case "mkar":
-            train_dataset = MKARDataset(train_length_range, max_test_length, key_len=run_config.key_len)
-            test_dataset = {
-                f"len{r[0]}-{r[1]}": EvalDataset(
-                    MKARDataset(r, max_test_length, add_positional_offset=False, key_len=run_config.key_len),
-                    test_num,
-                )
-                for r in test_length_ranges
-            }
+            return MKARDataset(
+                length_range,
+                max_test_length,
+                add_positional_offset=add_positional_offset,
+                key_len=run_config.key_len,
+            )
         case _:
             raise ValueError(f"Unknown task {task!r}")
 
+
+def build_datasets(run_config: RunConfig):
+    train_length_range = run_config.train_length_range
+    test_length_ranges = run_config.test_length_ranges
+    max_test_length = test_length_ranges[-1][1]
+    test_num = run_config.test_num
+
+    train_dataset = _make_task_dataset(run_config, train_length_range, max_test_length, add_positional_offset=True)
+    test_dataset = {
+        f"len{r[0]}-{r[1]}": EvalDataset(
+            _make_task_dataset(run_config, r, max_test_length, add_positional_offset=False),
+            test_num,
+        )
+        for r in test_length_ranges
+    }
+
     return train_dataset, test_dataset, train_length_range, test_length_ranges
+
+
+def build_curriculum_datasets(run_config: RunConfig):
+    """Build datasets for curriculum learning (see ``utils.CurriculumConfig``).
+
+    Returns:
+        train_dataset: a single dataset instance whose ``range_max`` is mutated in
+            place by ``CurriculumTrainCallback`` as training advances through stages.
+            ``range_min`` never changes across stages (curriculum stages always start
+            at length 0, clamped by each task's own minimum length at construction).
+        stage_eval_datasets: list indexed by stage (0-indexed), each a dict of three
+            ``EvalDataset``s keyed like ``"len{a}-{b}"`` for that stage's 1x/2x/3x bins.
+            Precomputed once up front (mirrors ``build_datasets``' ``test_dataset``)
+            since the stage schedule doesn't depend on architecture or seed.
+    """
+    curriculum = run_config.curriculum
+    assert curriculum is not None, "build_curriculum_datasets requires run_config.curriculum to be set"
+
+    max_test_length = curriculum.max_test_length
+    test_num = run_config.test_num
+
+    train_dataset = _make_task_dataset(
+        run_config, curriculum.stage_train_range(0), max_test_length, add_positional_offset=True
+    )
+
+    stage_eval_datasets: list[dict[str, EvalDataset]] = []
+    for stage_idx in range(curriculum.num_steps):
+        stage_eval_datasets.append(
+            {
+                f"len{r[0]}-{r[1]}": EvalDataset(
+                    _make_task_dataset(run_config, r, max_test_length, add_positional_offset=False),
+                    test_num,
+                )
+                for r in curriculum.stage_test_ranges(stage_idx)
+            }
+        )
+
+    return train_dataset, stage_eval_datasets
 

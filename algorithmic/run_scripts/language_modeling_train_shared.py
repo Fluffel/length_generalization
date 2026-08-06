@@ -15,7 +15,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from language_modeling_train import main
-from utils import ArchSlot, RunConfig
+from utils import ArchSlot, CurriculumConfig, RunConfig
 
 TASK_CHOICES = [
     "bin_majority",
@@ -73,7 +73,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--train-length-range",
         type=_parse_length_range,
         default=(0, 50),
-        help="Comma-separated min,max for training sequence length (e.g., 0,50).",
+        help="Comma-separated min,max for training sequence length (e.g., 0,50). Ignored if curriculum flags are set.",
+    )
+
+    parser.add_argument(
+        "--curriculum-num-steps",
+        type=int,
+        default=None,
+        help="Number of curriculum stages. Requires --curriculum-step-size and --curriculum-steps-per-stage.",
+    )
+    parser.add_argument(
+        "--curriculum-step-size",
+        type=int,
+        default=None,
+        help="Train length grows by this much each stage (stage i trains on lengths up to step_size*(i+1)).",
+    )
+    parser.add_argument(
+        "--curriculum-steps-per-stage",
+        type=int,
+        default=None,
+        help="Number of trainer steps to run at each curriculum stage before growing the length.",
     )
 
     parser.add_argument("--save-final-weights", action="store_true")
@@ -106,6 +125,25 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.hybrid_layer_pattern = args.hybrid_layer_pattern.strip().lower()
 
     rc.train_length_range = args.train_length_range
+
+    curriculum_args = {
+        "--curriculum-num-steps": args.curriculum_num_steps,
+        "--curriculum-step-size": args.curriculum_step_size,
+        "--curriculum-steps-per-stage": args.curriculum_steps_per_stage,
+    }
+    num_curriculum_args_set = sum(v is not None for v in curriculum_args.values())
+    if num_curriculum_args_set > 0:
+        missing = [name for name, val in curriculum_args.items() if val is None]
+        if missing:
+            raise SystemExit(
+                "Curriculum learning requires all of --curriculum-num-steps, "
+                f"--curriculum-step-size, --curriculum-steps-per-stage; missing: {', '.join(missing)}"
+            )
+        rc.curriculum = CurriculumConfig(
+            num_steps=args.curriculum_num_steps,
+            step_size=args.curriculum_step_size,
+            steps_per_stage=args.curriculum_steps_per_stage,
+        )
 
     rc.save_final_weights = args.save_final_weights
     rc.report_to = args.report_to

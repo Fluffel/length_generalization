@@ -24,10 +24,10 @@ def build_architectures(args) -> list[ArchSlot]:
             layer_norm=not args.noln,
         )
         for l in [1, 2]
-        for h in [1, 2]
-        for d in [64, 256]
-        for dr in [0, 0.1]
-        for lr in [1e-3, 1e-4]
+        for h in [2]
+        for d in [64]
+        for dr in [0.1]
+        for lr in [1e-3]
         for btwmlp in [1]
     ]
 

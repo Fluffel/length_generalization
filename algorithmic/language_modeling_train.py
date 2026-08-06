@@ -11,9 +11,16 @@ import numpy as np
 import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
 
-from dataset_generators import build_datasets
+from dataset_generators import build_curriculum_datasets, build_datasets
 from models import build_model
-from utils import ArchSlot, RunConfig, default_hybrid_sweep, default_ssm_sweep, default_transformer_sweep
+from utils import (
+    ArchSlot,
+    CurriculumConfig,
+    RunConfig,
+    default_hybrid_sweep,
+    default_ssm_sweep,
+    default_transformer_sweep,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -267,6 +274,183 @@ class AlgorithmicTrainCallback(TrainerCallback):
             self._log_to_wandb({self._metric_name("train/loss"): logs["loss"]}, state.global_step)
 
 
+def _apply_curriculum_stage_range(train_dataset, desired_range: tuple[int, int], task_floor: int) -> None:
+    """Set ``train_dataset``'s length window to ``desired_range``, clamped below by
+    ``task_floor`` (the task's own minimum feasible length, e.g. MKAR needs
+    ``length >= 2 * key_len + 1``; see each dataset class's ``__init__``).
+
+    Mutates ``range_min``/``range_max`` in place (rather than constructing a new
+    dataset instance) since ``Trainer`` already holds a reference to this exact
+    object for its train dataloader; the ``IterableDataset.__iter__`` loops read
+    these attributes fresh on every sample draw, so the new window takes effect
+    immediately without recreating the dataloader.
+    """
+    lo, hi = desired_range
+    lo = max(lo, task_floor)
+    assert lo <= hi, (
+        f"curriculum window {desired_range} is entirely below the minimum length "
+        f"({task_floor}) required by this task; use a larger --curriculum-step-size."
+    )
+    train_dataset.range_min = lo
+    train_dataset.range_max = hi
+
+
+class CurriculumTrainCallback(TrainerCallback):
+    """Drives curriculum learning and logs one summary line per curriculum step.
+
+    ``eval_steps`` is set to (at most) ``curriculum.steps_per_stage`` so evaluation
+    runs periodically *within* a stage — not just at its very end — against the eval
+    datasets for that stage's 1x/2x/3x length bins (``stage_eval_datasets[stage_idx]``,
+    active since either the previous stage's transition or run setup). This lets a
+    stage finish early once it's solved, instead of always burning its full step budget.
+
+    When ``Trainer.eval_dataset`` is a dict, ``Trainer.evaluate()`` recurses once per
+    named sub-dataset, calling ``on_evaluate`` separately for *each* length bin with
+    only that bin's metrics (not once for the whole stage) — so results are
+    accumulated in ``latest_acc`` across calls, same as ``AlgorithmicTrainCallback``.
+
+    Once all of the current stage's bins have reported in, the stage is considered
+    "done" (tracked via the per-stage ``stop_state``, reset at every transition) when
+    either:
+      - the 1x-length bin reaches ~perfect accuracy ("solved"), or
+      - ``steps_per_stage`` steps have elapsed since the stage began ("step cap").
+
+    A stage being "done" only means *that stage* stops — it advances the curriculum
+    (grows the train dataset's max length, swaps ``trainer.eval_dataset`` to the next
+    stage's eval datasets) and training continues uninterrupted. ``control
+    .should_training_stop`` (the only thing that actually halts ``Trainer.train()``)
+    is set only when the *last* stage is done, i.e. there is no next stage to advance
+    to.
+
+    ``trainer`` must be assigned after ``Trainer(...)`` is constructed (the callback
+    is needed to build the ``Trainer``, so it can't be passed in up front).
+    """
+
+    def __init__(
+        self,
+        run_config: RunConfig,
+        arch: ArchSlot,
+        curriculum: CurriculumConfig,
+        train_dataset,
+        stage_eval_datasets: list[dict[str, Any]],
+        summary_file,
+        task_floor: int,
+        use_wandb: bool = False,
+        metric_prefix: str = "",
+    ):
+        self.run_config = run_config
+        self.arch = arch
+        self.curriculum = curriculum
+        self.train_dataset = train_dataset
+        self.stage_eval_datasets = stage_eval_datasets
+        self.summary_file = summary_file
+        self.task_floor = task_floor
+        self.log_prefix = format_log_prefix(run_config, arch, curriculum.max_steps)
+        self.use_wandb = use_wandb
+        self.metric_prefix = metric_prefix
+        self.trainer: Optional[Trainer] = None
+
+        self.num_stages = curriculum.num_steps
+        self.stage_idx = 0
+        self.stage_start_step = 0
+        self._eval_acc_keys = self._stage_eval_keys(self.stage_idx)
+        self._train_bin_key = self._eval_acc_keys[0]
+        self.latest_acc: dict[str, float] = {}
+        # Per-stage stop signal: "should_stop" means *this stage* is done (solved or
+        # step-capped), not that training as a whole should halt. Reset every time a
+        # new stage begins; see class docstring.
+        self.stop_state: dict[str, Any] = {"should_stop": False, "fit_train_data": False}
+
+    def _stage_eval_keys(self, stage_idx: int) -> list[str]:
+        return [f"eval_{name}_acc" for name in self.stage_eval_datasets[stage_idx]]
+
+    def _metric_name(self, key: str) -> str:
+        if not self.metric_prefix:
+            return key
+        return f"{self.metric_prefix}/{key}"
+
+    def _log_to_wandb(self, payload: dict[str, Any], trainer_step: int) -> None:
+        if not self.use_wandb or wandb is None or wandb.run is None:
+            return
+        full: dict[str, Any] = {f"{self.metric_prefix}/trainer_step": trainer_step, **payload}
+        wandb.log(full)
+
+    def _advance_to_next_stage(self, global_step: int) -> None:
+        """Slide the train window forward to the next stage and reset per-stage state.
+
+        Only called when the current stage isn't the last one — see ``on_evaluate``.
+        """
+        self.stage_idx += 1
+        self.stage_start_step = global_step
+        _apply_curriculum_stage_range(
+            self.train_dataset, self.curriculum.stage_train_range(self.stage_idx), self.task_floor
+        )
+        self._eval_acc_keys = self._stage_eval_keys(self.stage_idx)
+        self._train_bin_key = self._eval_acc_keys[0]
+        self.stop_state = {"should_stop": False, "fit_train_data": False}
+        if self.trainer is not None:
+            self.trainer.eval_dataset = self.stage_eval_datasets[self.stage_idx]
+
+    def on_evaluate(self, args, state, control, metrics=None, logs=None, eval_dataloader=None, **kwargs):
+        metrics = metrics or {}
+        for key in self._eval_acc_keys:
+            if key in metrics:
+                self.latest_acc[key] = metrics[key]
+        if len(self.latest_acc) < len(self._eval_acc_keys):
+            return  # still waiting on the other length bins for this stage
+
+        solved = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
+        step_cap_reached = (state.global_step - self.stage_start_step) >= self.curriculum.steps_per_stage
+        if not (solved or step_cap_reached):
+            # Stage still in progress: don't log or advance yet, just keep training
+            # (mirrors AlgorithmicTrainCallback, which only logs on early-stop/epoch-done).
+            self.latest_acc = {}
+            return
+
+        if solved:
+            self.stop_state["fit_train_data"] = True
+        self.stop_state["should_stop"] = True  # this stage is done; see class docstring
+
+        stage_size = self.curriculum.stage_size(self.stage_idx)
+        wandb_eval: dict[str, Any] = {
+            self._metric_name(f"eval/acc/{key.removeprefix('eval_')}"): val
+            for key, val in self.latest_acc.items()
+        }
+        wandb_eval[self._metric_name("curriculum/stage")] = self.stage_idx + 1
+        wandb_eval[self._metric_name("curriculum/size")] = stage_size
+        self._log_to_wandb(wandb_eval, state.global_step)
+
+        msg = "early stop" if solved else "reach step cap"
+        train_show = float(self.latest_acc.get(self._train_bin_key, 0) or 0)
+        if train_show >= 0.99:
+            msg = ">> " + msg
+        marker = f"[curriculum step {self.stage_idx + 1}/{self.num_stages} size={stage_size}] {msg}"
+        line = "\t".join(
+            [
+                self.log_prefix,
+                marker,
+                "\t\t".join(f"{k}: {v}" for k, v in self.latest_acc.items()),
+                f"\tlr: {self.arch.lr}",
+            ]
+        )
+        print(line, file=self.summary_file)
+        self.summary_file.flush()
+
+        self.latest_acc = {}
+        is_last_stage = self.stage_idx >= self.num_stages - 1
+        if is_last_stage:
+            # No next curriculum to advance to: this is the one case a per-stage
+            # stop turns into an actual full stop of training.
+            control.should_training_stop = True
+        else:
+            self._advance_to_next_stage(state.global_step)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        logs = logs or {}
+        if "loss" in logs:
+            self._log_to_wandb({self._metric_name("train/loss"): logs["loss"]}, state.global_step)
+
+
 def _is_wandb_enabled(run_config: RunConfig) -> bool:
     return run_config.report_to.strip().lower() == "wandb"
 
@@ -347,7 +531,24 @@ def main(run_config: RunConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _ = device
 
-    train_dataset, test_dataset, train_length_range, test_length_ranges = build_datasets(run_config)
+    curriculum = run_config.curriculum
+    stage_eval_datasets: Optional[list[dict[str, Any]]] = None
+    curriculum_task_floor = 0
+    if curriculum is not None:
+        train_dataset, stage_eval_datasets = build_curriculum_datasets(run_config)
+        # The task's own minimum feasible length: stage 0's desired range starts at 0,
+        # so whatever __init__ clamped range_min up to *is* that floor. Captured once,
+        # before any stage-transition mutation, and reused for every later stage/arch/seed.
+        curriculum_task_floor = train_dataset.range_min
+        # Compat globals + example-printing below reflect the full curriculum span.
+        train_length_range = curriculum.stage_train_range(curriculum.num_steps - 1)
+        test_length_ranges = curriculum.stage_test_ranges(curriculum.num_steps - 1)
+        example_eval_datasets = stage_eval_datasets[0]
+        example_test_ranges = curriculum.stage_test_ranges(0)
+    else:
+        train_dataset, test_dataset, train_length_range, test_length_ranges = build_datasets(run_config)
+        example_eval_datasets = test_dataset
+        example_test_ranges = test_length_ranges
     n_positions = train_dataset.n_positions
     tokenizer = train_dataset.tokenizer
 
@@ -373,18 +574,32 @@ def main(run_config: RunConfig) -> None:
         try:
             with open(summary_path, "a") as summary_file:
                 # Sanity check: print example sequences from first test length range
-                first_range = test_length_ranges[0]
+                first_range = example_test_ranges[0]
                 key0 = f"len{first_range[0]}-{first_range[1]}"
                 for i in range(run_config.print_example_sequences):
                     print("\ninput example:", flush=True)
-                    print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[key0][i][0])), flush=True)
+                    print(" ".join(tokenizer.convert_ids_to_tokens(example_eval_datasets[key0][i][0])), flush=True)
                     print("label example:", flush=True)
-                    print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[key0][i][2])), flush=True)
+                    print(" ".join(tokenizer.convert_ids_to_tokens(example_eval_datasets[key0][i][2])), flush=True)
 
                 stop_state: dict[str, Any] = {"should_stop": False, "fit_train_data": False}
 
                 for arch in run_config.architectures:
                     max_steps, warmup_steps = _max_steps_warmup(run_config, arch)
+                    if curriculum is not None:
+                        max_steps = curriculum.max_steps
+                        # Eval at least once per stage's step budget so a stage can be detected as
+                        # "solved" and advance early instead of always burning steps_per_stage steps.
+                        eval_steps = min(run_config.eval_steps, curriculum.steps_per_stage)
+                        # Reset the shared train_dataset (reused across archs/seeds) back to stage 0;
+                        # a prior arch's run may have advanced it to a later stage's window.
+                        _apply_curriculum_stage_range(
+                            train_dataset, curriculum.stage_train_range(0), curriculum_task_floor
+                        )
+                        initial_eval_dataset = stage_eval_datasets[0]
+                    else:
+                        eval_steps = run_config.eval_steps
+                        initial_eval_dataset = test_dataset
 
                     output_tag = format_log_prefix(run_config, arch, max_steps)
                     # Same metric keys for every seed; seeds differ by separate W&B runs in one group.
@@ -415,7 +630,7 @@ def main(run_config: RunConfig) -> None:
                         per_device_eval_batch_size=per_device_bz,
                         max_steps=max_steps,
                         eval_strategy="steps",
-                        eval_steps=run_config.eval_steps,
+                        eval_steps=eval_steps,
                         save_strategy="no",
                         logging_strategy="steps",
                         logging_steps=run_config.logging_steps,
@@ -428,27 +643,42 @@ def main(run_config: RunConfig) -> None:
                         run_name=metric_prefix,
                     )
 
-                    cb = AlgorithmicTrainCallback(
-                        run_config,
-                        arch,
-                        train_length_range,
-                        test_length_ranges,
-                        summary_file,
-                        max_steps,
-                        stop_state,
-                        use_wandb=use_wandb,
-                        metric_prefix=metric_prefix,
-                    )
+                    if curriculum is not None:
+                        cb = CurriculumTrainCallback(
+                            run_config,
+                            arch,
+                            curriculum,
+                            train_dataset,
+                            stage_eval_datasets,
+                            summary_file,
+                            curriculum_task_floor,
+                            use_wandb=use_wandb,
+                            metric_prefix=metric_prefix,
+                        )
+                    else:
+                        cb = AlgorithmicTrainCallback(
+                            run_config,
+                            arch,
+                            train_length_range,
+                            test_length_ranges,
+                            summary_file,
+                            max_steps,
+                            stop_state,
+                            use_wandb=use_wandb,
+                            metric_prefix=metric_prefix,
+                        )
 
                     trainer = Trainer(
                         model=model,
                         args=training_args,
                         train_dataset=train_dataset,
-                        eval_dataset=test_dataset,
+                        eval_dataset=initial_eval_dataset,
                         data_collator=customCollator(tokenizer.pad_token_id),
                         compute_metrics=compute_metrics,
                         callbacks=[cb],
                     )
+                    if curriculum is not None:
+                        cb.trainer = trainer
                     trainer.train()
 
                     if run_config.save_final_weights:

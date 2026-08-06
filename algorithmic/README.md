@@ -23,9 +23,53 @@
   Pass via script arguments parsed in `run_scripts/language_modeling_train_shared.py`, e.g.:
   - task/seeds: `--task`, `--seeds`
   - train schedule: `--train-steps`, `--warmup-steps`, `--eval-steps`, `--logging-steps`
-  - length setup: `--train-length-range`
+  - length setup: `--train-length-range` (ignored if curriculum flags are set)
+  - curriculum learning: `--curriculum-num-steps`, `--curriculum-step-size`, `--curriculum-steps-per-stage` (all three required together; see below)
   - model toggles: `--nope`, `--noln`, `--use-olmo`, `--ssm-kernel`, `--hybrid-layer-pattern`, `--regularize`
   - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--key_size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`
+
+### Curriculum learning
+
+Instead of training on a fixed `--train-length-range` for the whole run, curriculum
+learning trains on a sliding, non-overlapping window of lengths that advances each
+stage:
+
+- `--curriculum-num-steps N`: number of curriculum stages.
+- `--curriculum-step-size S`: width of each stage's train window. Stage `i`
+  (0-indexed) trains on lengths `(i*S, (i+1)*S - 1)`, e.g. `S=10` -> stage 0 trains
+  on `(0,9)`, stage 1 on `(10,19)`, stage 2 on `(20,29)`, ... Note: eval bins (below)
+  still use the *cumulative* length `S*(i+1)` reached by stage `i`, not the window
+  itself.
+- `--curriculum-steps-per-stage K`: trainer steps to run at each stage before
+  advancing the window. Total steps = `N * K` (or fewer if stages solve early).
+
+Evaluation at 1x/2x/3x of the stage's cumulative length (mirroring the usual
+`test_length_ranges` bins, but recomputed per stage) runs periodically *within* each
+stage, not just at its end. A stage finishes — appending one line to the summary
+file, marked `[curriculum step i/N size=S]` — as soon as either:
+- the 1x-length bin reaches ~perfect train accuracy (`>> ... early stop`), or
+- `steps_per_stage` steps have elapsed since the stage began (`reach step cap`).
+
+Finishing a stage early (solved) just advances to the next, harder stage — it does
+**not** stop training. Only the *last* stage finishing (solved or step-capped) stops
+training for real, since there's no next stage to advance to:
+
+```
+lm...stp0.05k0.001lr  [curriculum step 1/5 size=10] >> early stop     eval_len0-9_acc: 1.0   eval_len10-19_acc: 0.3   eval_len20-29_acc: 0.1   lr: 0.001
+lm...stp0.05k0.001lr  [curriculum step 2/5 size=20] >> early stop     eval_len0-19_acc: 1.0  eval_len20-39_acc: 0.4   eval_len40-59_acc: 0.15  lr: 0.001
+...
+lm...stp0.05k0.001lr  [curriculum step 5/5 size=50] reach step cap    eval_len0-49_acc: 0.85 eval_len50-99_acc: 0.5   eval_len100-149_acc: 0.3 lr: 0.001
+```
+
+Example:
+
+```bash
+python algorithmic/run_scripts/language_modeling_train_transformer.py \
+  --task parity \
+  --curriculum-num-steps 5 \
+  --curriculum-step-size 10 \
+  --curriculum-steps-per-stage 3000
+```
 
 ### Training example
 
