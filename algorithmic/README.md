@@ -71,6 +71,20 @@ python algorithmic/run_scripts/language_modeling_train_transformer.py \
   --curriculum-steps-per-stage 3000
 ```
 
+**W&B plots for curriculum runs** (`--report-to wandb`): each architecture gets its
+own metric prefix as usual, but within it curriculum runs log two families of plots
+that read the same way regardless of how many stages there are:
+
+- `eval/acc/1x`, `eval/acc/2x`, `eval/acc/3x` (+ `train/acc`, an alias of `1x`) —
+  one point per stage, plotted against a `curriculum_step` (1..N) x-axis. Every
+  stage lands on the *same* three plots instead of a new one-point chart per stage
+  (the length range itself changes every stage, e.g. `len0-9` -> `len0-19` ->
+  `len0-29`, so it can't be baked into the metric name).
+- `stage{i}/train/loss` for `i` in `1..N` — a separate loss curve per curriculum
+  stage, each plotted against its own local `stage{i}/train_step` (steps since that
+  stage began), so differently-lengthed stages don't get stitched into one jumbled
+  chart.
+
 ### Training example
 
 ```bash

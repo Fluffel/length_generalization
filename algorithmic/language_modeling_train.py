@@ -295,6 +295,33 @@ def _apply_curriculum_stage_range(train_dataset, desired_range: tuple[int, int],
     train_dataset.range_max = hi
 
 
+def _wandb_define_curriculum_metrics(metric_prefix: str, curriculum: CurriculumConfig) -> None:
+    """Bind curriculum W&B plots to sensible x-axes instead of raw trainer step.
+
+    - ``eval/acc/{1x,2x,3x}``, ``train/acc``, and ``curriculum/size`` use a fixed
+      ``curriculum_step`` (1..num_steps) x-axis, so results from *every* stage land
+      on the same three eval plots (+ one train/acc plot) instead of getting a brand
+      new one-point chart per stage per length-range (the literal length range used
+      to be baked into the metric name, and it changes every stage).
+    - ``train/loss`` gets one *separate* metric per stage (``stage{i}/train/loss``),
+      each bound to its own local step counter (``stage{i}/train_step``, steps since
+      that stage began), so W&B renders ``num_steps`` independent loss curves
+      instead of stitching differently-lengthed training phases onto one continuous,
+      jumbled chart.
+    """
+    if wandb is None or wandb.run is None:
+        return
+    stage_step_key = f"{metric_prefix}/curriculum_step"
+    wandb.define_metric(stage_step_key)
+    for sub in ("train/acc", "eval/acc/1x", "eval/acc/2x", "eval/acc/3x", "curriculum/size"):
+        wandb.define_metric(f"{metric_prefix}/{sub}", step_metric=stage_step_key)
+    for stage_idx in range(curriculum.num_steps):
+        stage_num = stage_idx + 1
+        step_key = f"{metric_prefix}/stage{stage_num}/train_step"
+        wandb.define_metric(step_key)
+        wandb.define_metric(f"{metric_prefix}/stage{stage_num}/train/loss", step_metric=step_key)
+
+
 class CurriculumTrainCallback(TrainerCallback):
     """Drives curriculum learning and logs one summary line per curriculum step.
 
@@ -321,6 +348,12 @@ class CurriculumTrainCallback(TrainerCallback):
     .should_training_stop`` (the only thing that actually halts ``Trainer.train()``)
     is set only when the *last* stage is done, i.e. there is no next stage to advance
     to.
+
+    W&B logging (see ``_wandb_define_curriculum_metrics``): the three eval bins are
+    logged under fixed names (``eval/acc/1x`` etc.) against a ``curriculum_step``
+    x-axis so every stage contributes a point to the *same* three plots, and
+    per-step training loss is logged under a separate ``stage{i}/train/loss`` metric
+    per stage so stages don't get stitched into one chart.
 
     ``trainer`` must be assigned after ``Trainer(...)`` is constructed (the callback
     is needed to build the ``Trainer``, so it can't be passed in up front).
@@ -369,11 +402,10 @@ class CurriculumTrainCallback(TrainerCallback):
             return key
         return f"{self.metric_prefix}/{key}"
 
-    def _log_to_wandb(self, payload: dict[str, Any], trainer_step: int) -> None:
+    def _log_to_wandb(self, payload: dict[str, Any]) -> None:
         if not self.use_wandb or wandb is None or wandb.run is None:
             return
-        full: dict[str, Any] = {f"{self.metric_prefix}/trainer_step": trainer_step, **payload}
-        wandb.log(full)
+        wandb.log(payload)
 
     def _advance_to_next_stage(self, global_step: int) -> None:
         """Slide the train window forward to the next stage and reset per-stage state.
@@ -412,13 +444,19 @@ class CurriculumTrainCallback(TrainerCallback):
         self.stop_state["should_stop"] = True  # this stage is done; see class docstring
 
         stage_size = self.curriculum.stage_size(self.stage_idx)
+        # Fixed metric names (1x/2x/3x) instead of the literal, ever-changing length
+        # range so every stage's point lands on the same three plots — see
+        # _wandb_define_curriculum_metrics.
+        eval_1x, eval_2x, eval_3x = (self.latest_acc[key] for key in self._eval_acc_keys)
         wandb_eval: dict[str, Any] = {
-            self._metric_name(f"eval/acc/{key.removeprefix('eval_')}"): val
-            for key, val in self.latest_acc.items()
+            self._metric_name("curriculum_step"): self.stage_idx + 1,
+            self._metric_name("curriculum/size"): stage_size,
+            self._metric_name("train/acc"): eval_1x,
+            self._metric_name("eval/acc/1x"): eval_1x,
+            self._metric_name("eval/acc/2x"): eval_2x,
+            self._metric_name("eval/acc/3x"): eval_3x,
         }
-        wandb_eval[self._metric_name("curriculum/stage")] = self.stage_idx + 1
-        wandb_eval[self._metric_name("curriculum/size")] = stage_size
-        self._log_to_wandb(wandb_eval, state.global_step)
+        self._log_to_wandb(wandb_eval)
 
         msg = "early stop" if solved else "reach step cap"
         train_show = float(self.latest_acc.get(self._train_bin_key, 0) or 0)
@@ -447,8 +485,20 @@ class CurriculumTrainCallback(TrainerCallback):
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         logs = logs or {}
-        if "loss" in logs:
-            self._log_to_wandb({self._metric_name("train/loss"): logs["loss"]}, state.global_step)
+        if "loss" not in logs:
+            return
+        # Separate metric + local step counter per stage (see class docstring / the
+        # helper's docstring above), so W&B renders one independent loss curve per
+        # curriculum step instead of one chart spanning every (differently-lengthed)
+        # stage.
+        stage_num = self.stage_idx + 1
+        step_in_stage = state.global_step - self.stage_start_step
+        self._log_to_wandb(
+            {
+                self._metric_name(f"stage{stage_num}/train_step"): step_in_stage,
+                self._metric_name(f"stage{stage_num}/train/loss"): logs["loss"],
+            }
+        )
 
 
 def _is_wandb_enabled(run_config: RunConfig) -> bool:
@@ -605,7 +655,10 @@ def main(run_config: RunConfig) -> None:
                     # Same metric keys for every seed; seeds differ by separate W&B runs in one group.
                     metric_prefix = f"{run_config.task}/{output_tag}"
                     if use_wandb and wandb is not None and wandb.run is not None:
-                        _wandb_define_arch_metrics(run_config, metric_prefix)
+                        if curriculum is not None:
+                            _wandb_define_curriculum_metrics(metric_prefix, curriculum)
+                        else:
+                            _wandb_define_arch_metrics(run_config, metric_prefix)
                         wandb.config.update(
                             {
                                 f"architectures.{metric_prefix}": {
