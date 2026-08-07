@@ -18,6 +18,7 @@ from language_modeling_train import main
 from utils import ArchSlot, CurriculumConfig, RunConfig
 
 TASK_CHOICES = [
+    # Algorithmic tasks (dataset_generators._make_task_dataset)
     "bin_majority",
     "majority",
     "bin_majority_interleave",
@@ -30,6 +31,24 @@ TASK_CHOICES = [
     "flipflop",
     "selective_copy",
     "mkar",
+    # Formal-language tasks (dataset_generators._build_formal_datasets)
+    "tomita_1",
+    "tomita_2",
+    "tomita_3",
+    "tomita_4",
+    "tomita_5",
+    "tomita_6",
+    "tomita_7",
+    "d_2",
+    "d_3",
+    "d_4",
+    "d_12",
+    "abab_star",
+    "aa_star",
+    "an_star_a2",
+    "aa_star_bb_star",
+    "ab_star_d_bc_star",
+    "012_star_0_2_star",
 ]
 
 

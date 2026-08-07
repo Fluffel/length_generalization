@@ -37,7 +37,7 @@ def _format_masked_label(label_tokens: list[str], pad_token: str) -> str:
 def _normalize_task_name(task: str) -> str:
     """
     Accept common formal task aliases and convert to internal names used by
-    algorithmic/dataset_generators_formal.py.
+    algorithmic/dataset_generators.py's formal-language task routing.
     """
     t = task.strip().lower().replace("-", "_")
     aliases = {
@@ -205,8 +205,9 @@ def main() -> int:
         "--module",
         default="algorithmic.dataset_generators",
         help=(
-            "Python module containing dataset classes/build_datasets. "
-            "Use algorithmic.dataset_generators_formal for formal languages."
+            "Python module containing build_datasets(), or algorithmic.task_datasets for "
+            "dataset classes directly (both algorithmic and formal-language tasks are "
+            "handled by algorithmic.dataset_generators.build_datasets)."
         ),
     )
     p.add_argument(

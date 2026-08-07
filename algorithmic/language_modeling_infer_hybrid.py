@@ -16,10 +16,11 @@ import re
 import torch
 import torch.nn as nn
 
-from dataset_generators import (
+from task_datasets import (
     AdditionDataset,
     BinaryMajorityDataset,
     BinaryMajorityInterleaveDataset,
+    EvalDataset,
     MajorityDataset,
     MQARWordProblemDataset,
     ParityDataset,
@@ -27,7 +28,6 @@ from dataset_generators import (
     SortDataset,
     UniqueCopyDataset,
 )
-from dataset_generators import EvalDataset
 from models import build_model
 from utils import ArchSlot, RunConfig
 
