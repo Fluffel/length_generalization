@@ -149,8 +149,6 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     if args.freeze is not None and args.freeze_fraction is None:
         raise SystemExit("--freeze requires --freeze-fraction to also be set.")
     if args.freeze_fraction is not None:
-        if args.freeze is None:
-            raise SystemExit("--freeze-fraction requires --freeze to also be set.")
         if not (0.0 < args.freeze_fraction <= 1.0):
             raise SystemExit(f"--freeze-fraction must be in (0, 1], got {args.freeze_fraction}.")
     if args.freeze is not None and rc.model_family != "hybrid":
