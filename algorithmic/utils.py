@@ -209,6 +209,12 @@ class RunConfig:
     # Hybrid layout: repeat `hybrid_layer_pattern` this many times (same meaning as former `n_layer`).
     hybrid_layer_pattern: str = "sa"
 
+    # Freeze a hybrid model's attention or SSM weights for the initial `freeze_fraction` of
+    # training steps (or, with curriculum learning, of *each* curriculum stage's steps), then
+    # train the whole model for the remainder. Hybrid `model_family` only (validated in `main`).
+    freeze_arch: Optional[Literal["attention", "ssm"]] = None
+    freeze_fraction: float = 0.0
+
     # SSM / hybrid SSM blocks
     ssm_kernel: str = "s4"
     # OLMo GatedDeltaNet (used when use_olmo_core=True for ssm/hybrid).

@@ -65,6 +65,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba"])
     parser.add_argument("--hybrid-layer-pattern", type=str, default="sa")
 
+    parser.add_argument(
+        "--freeze",
+        type=str,
+        default=None,
+        choices=["attention", "ssm"],
+        help=(
+            "Freeze this sub-architecture's weights within a hybrid model for the initial "
+            "fraction of training (see --freeze-fraction), then train the whole model for the "
+            "remaining steps. With curriculum learning, freezing is re-applied at the start of "
+            "every curriculum stage. Hybrid models only."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-fraction",
+        type=float,
+        default=0.5,
+        help=(
+            "Fraction (0, 1] of training steps (or, with curriculum learning, of each stage's "
+            "steps) during which --freeze weights are frozen. Requires --freeze."
+        ),
+    )
+
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--warmup-steps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
@@ -123,6 +145,20 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.regularize = args.regularize
     rc.ssm_kernel = args.ssm_kernel
     rc.hybrid_layer_pattern = args.hybrid_layer_pattern.strip().lower()
+
+    if args.freeze is not None and args.freeze_fraction is None:
+        raise SystemExit("--freeze requires --freeze-fraction to also be set.")
+    if args.freeze_fraction is not None:
+        if args.freeze is None:
+            raise SystemExit("--freeze-fraction requires --freeze to also be set.")
+        if not (0.0 < args.freeze_fraction <= 1.0):
+            raise SystemExit(f"--freeze-fraction must be in (0, 1], got {args.freeze_fraction}.")
+    if args.freeze is not None and rc.model_family != "hybrid":
+        raise SystemExit(
+            f"--freeze is only supported for hybrid models, got model_family={rc.model_family!r}."
+        )
+    rc.freeze_arch = args.freeze
+    rc.freeze_fraction = args.freeze_fraction if args.freeze_fraction is not None else 0.0
 
     rc.train_length_range = args.train_length_range
 

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import random
 import sys
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
 
 from dataset_generators import build_curriculum_datasets, build_datasets
-from models import build_model
+from models import build_model, hybrid_group_parameters
 from utils import (
     ArchSlot,
     CurriculumConfig,
@@ -147,6 +148,10 @@ def format_log_prefix(
             pe,
             ln_str,
         ]
+        if run_config.freeze_arch is not None:
+            # e.g. "frza0.5" (freeze attention for the first 50% of steps) or "frzssm0.8".
+            abbrev = "a" if run_config.freeze_arch == "attention" else run_config.freeze_arch
+            parts.append(f"frz{abbrev}{run_config.freeze_fraction:g}")
     parts += [f"stp{step_k:.3g}k",
             f"{arch.lr}lr",
     ]
@@ -322,6 +327,66 @@ def _wandb_define_curriculum_metrics(metric_prefix: str, curriculum: CurriculumC
         wandb.define_metric(f"{metric_prefix}/stage{stage_num}/train/loss", step_metric=step_key)
 
 
+class FreezeCallback(TrainerCallback):
+    """Freezes a hybrid model's attention or SSM parameters for the first ``fraction`` of steps
+    in each training "phase".
+
+    A phase is the whole run for plain training, or -- with curriculum learning -- a single
+    curriculum stage; ``CurriculumTrainCallback`` calls ``freeze_now()`` again on every stage
+    transition so freezing is re-applied at the start of each stage (see its docstring).
+    ``phase_start``/``phase_len`` are callables (not plain ints) so this callback can read the
+    curriculum callback's live ``stage_start_step``, which changes as stages advance.
+
+    Freezing/unfreezing toggles ``requires_grad`` rather than excluding parameters from the
+    optimizer. HF ``Trainer`` builds the optimizer's parameter groups once -- from
+    ``requires_grad`` at that time -- *before* ``on_train_begin`` (this callback's first hook)
+    ever runs; a parameter excluded there would never be updated again even after being
+    unfrozen. Toggling ``requires_grad`` after the optimizer already contains every parameter
+    works instead, because e.g. ``AdamW.step()`` simply skips any parameter whose ``.grad`` is
+    ``None`` (as is the case while frozen, since autograd skips parameters that don't require
+    grad).
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        freeze_group: str,
+        fraction: float,
+        phase_start: Callable[[], int],
+        phase_len: Callable[[], int],
+    ):
+        self.freeze_group = freeze_group
+        self.fraction = fraction
+        self.phase_start = phase_start
+        self.phase_len = phase_len
+        self._params = list(hybrid_group_parameters(model, freeze_group))
+        if not self._params:
+            LOGGER.warning("--freeze %s matched no parameters; nothing will be frozen.", freeze_group)
+        self._frozen = False
+
+    def freeze_now(self) -> None:
+        for p in self._params:
+            p.requires_grad_(False)
+        self._frozen = True
+        LOGGER.info("Froze %s parameters (%d tensors).", self.freeze_group, len(self._params))
+
+    def unfreeze_now(self) -> None:
+        for p in self._params:
+            p.requires_grad_(True)
+        self._frozen = False
+        LOGGER.info("Unfroze %s parameters (%d tensors).", self.freeze_group, len(self._params))
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.freeze_now()
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        if not self._frozen:
+            return
+        threshold = self.phase_start() + math.ceil(self.fraction * self.phase_len())
+        if state.global_step >= threshold:
+            self.unfreeze_now()
+
+
 class CurriculumTrainCallback(TrainerCallback):
     """Drives curriculum learning and logs one summary line per curriculum step.
 
@@ -370,6 +435,7 @@ class CurriculumTrainCallback(TrainerCallback):
         task_floor: int,
         use_wandb: bool = False,
         metric_prefix: str = "",
+        freeze_callback: Optional["FreezeCallback"] = None,
     ):
         self.run_config = run_config
         self.arch = arch
@@ -381,6 +447,9 @@ class CurriculumTrainCallback(TrainerCallback):
         self.log_prefix = format_log_prefix(run_config, arch, curriculum.max_steps)
         self.use_wandb = use_wandb
         self.metric_prefix = metric_prefix
+        # Re-freezes `freeze_callback`'s weights at the start of every curriculum stage; see
+        # `_advance_to_next_stage` and `FreezeCallback`'s docstring.
+        self.freeze_callback = freeze_callback
         self.trainer: Optional[Trainer] = None
 
         self.num_stages = curriculum.num_steps
@@ -422,6 +491,8 @@ class CurriculumTrainCallback(TrainerCallback):
         self.stop_state = {"should_stop": False, "fit_train_data": False}
         if self.trainer is not None:
             self.trainer.eval_dataset = self.stage_eval_datasets[self.stage_idx]
+        if self.freeze_callback is not None:
+            self.freeze_callback.freeze_now()
 
     def on_evaluate(self, args, state, control, metrics=None, logs=None, eval_dataloader=None, **kwargs):
         metrics = metrics or {}
@@ -574,9 +645,22 @@ class customCollator:
 
 
 
+def _validate_freeze_config(run_config: RunConfig) -> None:
+    if run_config.freeze_arch is None:
+        return
+    if run_config.model_family != "hybrid":
+        raise ValueError(
+            f"freeze_arch={run_config.freeze_arch!r} is only supported for hybrid models "
+            f"(got model_family={run_config.model_family!r})."
+        )
+    if not (0.0 < run_config.freeze_fraction <= 1.0):
+        raise ValueError(f"freeze_fraction must be in (0, 1], got {run_config.freeze_fraction}.")
+
+
 def main(run_config: RunConfig) -> None:
     global train_length_range, test_length_ranges
     configure_logging()
+    _validate_freeze_config(run_config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _ = device
@@ -696,6 +780,7 @@ def main(run_config: RunConfig) -> None:
                         run_name=metric_prefix,
                     )
 
+                    freeze_cb: Optional[FreezeCallback] = None
                     if curriculum is not None:
                         cb = CurriculumTrainCallback(
                             run_config,
@@ -708,6 +793,18 @@ def main(run_config: RunConfig) -> None:
                             use_wandb=use_wandb,
                             metric_prefix=metric_prefix,
                         )
+                        if run_config.freeze_arch is not None:
+                            # `phase_start`/`phase_len` read `cb`'s live state, since it
+                            # re-freezes (via `cb.freeze_callback`, set below) and updates
+                            # `stage_start_step` at every curriculum stage transition.
+                            freeze_cb = FreezeCallback(
+                                model,
+                                run_config.freeze_arch,
+                                run_config.freeze_fraction,
+                                phase_start=lambda: cb.stage_start_step,
+                                phase_len=lambda: curriculum.steps_per_stage,
+                            )
+                            cb.freeze_callback = freeze_cb
                     else:
                         cb = AlgorithmicTrainCallback(
                             run_config,
@@ -720,7 +817,16 @@ def main(run_config: RunConfig) -> None:
                             use_wandb=use_wandb,
                             metric_prefix=metric_prefix,
                         )
+                        if run_config.freeze_arch is not None:
+                            freeze_cb = FreezeCallback(
+                                model,
+                                run_config.freeze_arch,
+                                run_config.freeze_fraction,
+                                phase_start=lambda: 0,
+                                phase_len=lambda max_steps=max_steps: max_steps,
+                            )
 
+                    callbacks = [cb] if freeze_cb is None else [cb, freeze_cb]
                     trainer = Trainer(
                         model=model,
                         args=training_args,
@@ -728,7 +834,7 @@ def main(run_config: RunConfig) -> None:
                         eval_dataset=initial_eval_dataset,
                         data_collator=customCollator(tokenizer.pad_token_id),
                         compute_metrics=compute_metrics,
-                        callbacks=[cb],
+                        callbacks=callbacks,
                     )
                     if curriculum is not None:
                         cb.trainer = trainer

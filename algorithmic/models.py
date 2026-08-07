@@ -1,7 +1,7 @@
 import copy
 import importlib
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 from transformers import GPT2LMHeadModel, GPT2Config
 from transformers.loss.loss_utils import ForCausalLMLoss
@@ -11,8 +11,8 @@ import torch.nn as nn
 
 from mambapy.mamba import ResidualBlock as MambaResidualBlock
 from olmo_core.nn.transformer.config import TransformerConfig, TransformerBlockConfig
-from olmo_core.nn.attention import AttentionConfig
-from olmo_core.nn.attention.recurrent import GatedDeltaNetConfig
+from olmo_core.nn.attention import Attention, AttentionConfig
+from olmo_core.nn.attention.recurrent import GatedDeltaNet, GatedDeltaNetConfig
 from utils import ArchSlot, HybridConfig, RunConfig, SSMConfig, create_hybrid_config, create_ssm_config, create_transformer_config, mamba_config_from_ssm_config
 from utils import run_length_encode
 from model_extensions import S4D, CustomMLP, set_identity_layernorms
@@ -312,6 +312,29 @@ class HybridSSMTransformerModel(nn.Module):
         if not config.layer_norm:
             set_identity_layernorms(self)
 
+    def frozen_group_parameters(self, group: str) -> Iterator[nn.Parameter]:
+        """Parameters belonging exclusively to this model's 'attention' or 'ssm' sub-architecture.
+
+        Used to implement ``--freeze {attention,ssm}`` (see ``FreezeCallback`` in
+        ``language_modeling_train.py``). Shared components -- token/position embeddings,
+        ``ln_f``, ``lm_head`` -- intentionally belong to neither group.
+        """
+        if group == "attention":
+            kind = "a"
+        elif group == "ssm":
+            kind = "s"
+        else:
+            raise ValueError(f"Unknown freeze group {group!r}; expected 'attention' or 'ssm'.")
+
+        for block_kind, block in zip(self.layer_kinds, self.blocks):
+            if block_kind == kind:
+                yield from block.parameters()
+        if group == "ssm":
+            # Between-block layers used only around SSM blocks (see forward()); the analogous
+            # attention-only MLPs live *inside* each "a" block already covered above.
+            yield from self.ssm_norms.parameters()
+            yield from self.ssm_mlps.parameters()
+
     def forward(self, input_ids=None, inputs_embeds=None, position_ids=None, labels=None, **kwargs):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -409,6 +432,40 @@ class OLMoCoreCausalLMAdapter(nn.Module):
             return CausalLMOutput(loss=loss, logits=logits)
 
         return CausalLMOutput(loss=None, logits=logits)
+
+
+def hybrid_group_parameters(model: nn.Module, group: str) -> Iterator[nn.Parameter]:
+    """Parameters belonging to a hybrid model's 'attention' or 'ssm' sub-architecture.
+
+    Dispatches on the concrete hybrid implementation so ``--freeze {attention,ssm}`` (see
+    ``FreezeCallback`` in ``language_modeling_train.py``) works the same way regardless of
+    ``run_config.use_olmo_core``:
+
+    - Local ``HybridSSMTransformerModel``: delegates to its own ``frozen_group_parameters``.
+    - OLMo-core hybrid (``OLMoCoreCausalLMAdapter`` wrapping a ``Transformer`` built with a
+      per-block ``block_pattern`` of ``"attn"``/``"gdn"``, see ``_build_olmo_hybrid_model``):
+      each ``TransformerBlock`` in ``model.model.blocks`` already bundles one attention-or-GDN
+      mixer with its *own* feed-forward + norms, so (unlike the local model, which has separate
+      ``ssm_norms``/``ssm_mlps`` living outside the SSM blocks) the whole block's parameters are
+      the group -- selected by the runtime type of ``block.attention``.
+    """
+    if group not in ("attention", "ssm"):
+        raise ValueError(f"Unknown freeze group {group!r}; expected 'attention' or 'ssm'.")
+
+    if isinstance(model, HybridSSMTransformerModel):
+        yield from model.frozen_group_parameters(group)
+        return
+
+    if isinstance(model, OLMoCoreCausalLMAdapter):
+        target_cls = GatedDeltaNet if group == "ssm" else Attention
+        for block in model.model.blocks.values():
+            if isinstance(block.attention, target_cls):
+                yield from block.parameters()
+        return
+
+    raise TypeError(
+        f"--freeze is only supported for hybrid models; got unrecognized model type {type(model)!r}."
+    )
 
 
 def _require_olmo_core():
