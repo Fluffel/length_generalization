@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--noln", action="store_true", help="Disable layer norm in architecture slots")
     parser.add_argument("--regularize", type=float, default=0.0)
-    parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba"])
+    parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba", "mamba2", "mamba3"])
     parser.add_argument("--hybrid-layer-pattern", type=str, default="sa")
 
     parser.add_argument(

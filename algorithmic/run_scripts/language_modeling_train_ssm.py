@@ -15,10 +15,10 @@ from run_scripts.language_modeling_train_shared import run_from_cli
 def build_architectures(_args) -> list[ArchSlot]:
     return [
         ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=1)
-        for l in [1]
-        for d in [16]
+        for l in [1, 2, 4]
+        for d in [16, 64]
         for dr in [0, 0.1]
-        for lr in [1e-3]
+        for lr in [1e-3, 3e-4]
     ]
 
 

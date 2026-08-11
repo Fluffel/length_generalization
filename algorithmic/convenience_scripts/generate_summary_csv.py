@@ -19,7 +19,7 @@ _LINE_LR_RE = re.compile(r"\blr:\s*([0-9]*\.?[0-9]+(?:e-?[0-9]+)?)")
 # Known SSM kernel identifiers.  Extend this set to add new kernels; they are
 # pre-extracted from the model string before the tokeniser runs so that the
 # [sa]+ layer-ordering rule can remain a simple (?:a|s)+ without any lookaheads.
-KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba", "gdn"})
+KNOWN_KERNELS: frozenset[str] = frozenset({"s4", "s6", "mamba", "mamba2", "mamba3", "gdn"})
 
 # Kernel placeholders use \x01N\x01 (SOH byte as delimiter) so they cannot be
 # split by any letter or digit pattern in the tokeniser regex.
