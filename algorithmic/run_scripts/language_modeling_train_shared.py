@@ -136,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of trainer steps to run at each curriculum stage before growing the length.",
     )
 
+    parser.add_argument("--early-stop", action="store_true")
+
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--report-to", type=str, default="wandb", choices=["none", "wandb"])
     parser.add_argument("--wandb-project", type=str, default=None)
@@ -178,6 +180,7 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.freeze_fraction = args.freeze_fraction if args.freeze_fraction is not None else 0.0
 
     rc.train_length_range = args.train_length_range
+    rc.early_stop = args.early_stop
 
     curriculum_args = {
         "--curriculum-num-steps": args.curriculum_num_steps,

@@ -237,6 +237,7 @@ class RunConfig:
     weight_decay: float = 0.01
     optim: str = "adamw_torch"
     lr_scheduler_type: str = "linear"
+    early_stop = True
 
     log_dir: str = "./logs"
     summary_basename: str = "summary.txt"
