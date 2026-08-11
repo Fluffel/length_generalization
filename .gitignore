@@ -178,6 +178,7 @@ cython_debug/
 
 # local files
 external/
-# logs/
+exports/
+logs/
 /submissions/
 logs_old/
