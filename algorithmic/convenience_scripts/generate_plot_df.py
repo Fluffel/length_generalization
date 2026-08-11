@@ -11,6 +11,13 @@ This script keeps plot aesthetics and legend naming consistent with
 
 Groups are built from ``--group-by`` columns and plotted via their max-winner
 datapoints per validation bin (same winner logic as ``generate_plot.py``).
+
+Multitask grids (``--multitask``) place one task per axis with:
+
+* ``--ncols``        axes per row
+* ``--multititles``  per-axis titles (defaults to task names)
+* ``--plot-size``    per-axis size in inches (``W,H`` / ``WxH``); figure is
+                     ``ncols*W`` by ``nrows*H``
 """
 
 from __future__ import annotations
@@ -65,13 +72,30 @@ def _group_label_from_sid(sid: str, fallback: str) -> str:
     return fallback
 
 
-def plot_task_df(
+def _parse_plot_size(raw: str | None) -> tuple[float, float] | None:
+    """Parse per-axis plot size as ``W,H`` or ``WxH`` (inches)."""
+    if raw is None or not str(raw).strip():
+        return None
+    s = str(raw).strip().lower().replace(" ", "")
+    if "x" in s:
+        parts = s.split("x", 1)
+    else:
+        parts = s.split(",", 1)
+    if len(parts) != 2:
+        raise SystemExit(f"Invalid --plot-size {raw!r}; expected W,H or WxH.")
+    try:
+        w, h = float(parts[0]), float(parts[1])
+    except ValueError as e:
+        raise SystemExit(f"Invalid --plot-size {raw!r}; expected numeric W,H.") from e
+    if w <= 0 or h <= 0:
+        raise SystemExit("--plot-size width and height must be > 0.")
+    return (w, h)
+
+
+def _prepare_task_plot(
     df,
     *,
     task: str,
-    output_path: Path,
-    title: str,
-    legend_loc: str,
     group_by: list[str],
     group_label_mode: str,
     group_custom_labels: list[str],
@@ -80,17 +104,8 @@ def plot_task_df(
     x_tick_step: int,
     x_axis_break: str | None,
     num_bins: int | None,
-) -> None:
-    try:
-        import matplotlib as mpl
-        import matplotlib.pyplot as plt
-        import pandas as pd
-        import seaborn as sns
-    except ModuleNotFoundError as e:
-        raise SystemExit(
-            "Plotting requires pandas, matplotlib, and seaborn. Install them first."
-        ) from e
-
+) -> dict:
+    """Collapse/filter one task and compute max-series geometry for drawing."""
     df = df.copy()
     df["task"] = df["task"].astype(str)
     df = df[df["task"] == task]
@@ -112,7 +127,7 @@ def plot_task_df(
         keep_dps = cnt[cnt["num_bins"] == num_bins][["model", "learning_rate"]]
         df = df.merge(keep_dps, on=["model", "learning_rate"], how="inner")
         if df.empty:
-            raise SystemExit(f"No rows left after --num-bins={num_bins}.")
+            raise SystemExit(f"No rows left after --num-bins={num_bins} for task={task!r}.")
 
     require_columns(df, group_by, "--group-by")
 
@@ -128,7 +143,7 @@ def plot_task_df(
 
     filtered_rows = dfc.to_dict(orient="records")
     if not filtered_rows:
-        raise SystemExit("No rows to plot after collapse/filtering.")
+        raise SystemExit(f"No rows to plot after collapse/filtering for task={task!r}.")
 
     if x_ticks_mode == "bins" and x_axis_break is not None and str(x_axis_break).strip():
         raise SystemExit("--x-axis-break is incompatible with --x-ticks bins.")
@@ -152,7 +167,8 @@ def plot_task_df(
         if len(group_custom_labels) != len(ordered_sids):
             raise SystemExit(
                 f"--group-custom-labels count ({len(group_custom_labels)}) must match "
-                f"number of groups ({len(ordered_sids)}), in first-appearance order."
+                f"number of groups ({len(ordered_sids)}) for task={task!r}, "
+                "in first-appearance order."
             )
         sid_to_custom_label = {
             sid: group_custom_labels[i] for i, sid in enumerate(ordered_sids)
@@ -171,7 +187,7 @@ def plot_task_df(
 
     sub_keys = sorted(sub_series_rows.keys(), key=sub_key_sort)
     if not sub_keys:
-        raise SystemExit("No sub-series to plot.")
+        raise SystemExit(f"No sub-series to plot for task={task!r}.")
 
     base_labels = {sk: legend_label_from_rows(sub_series_rows[sk]) for sk in sub_keys}
     sig_count_by_sid: dict[str, int] = defaultdict(int)
@@ -224,7 +240,10 @@ def plot_task_df(
     all_bucket_names = {str(r["bucket"]) for r in filtered_rows}
     x_tick_ends = sorted({int(x) for b in all_bucket_names if (x := _bucket_plot_x(b)) is not None})
     if not x_tick_ends:
-        raise SystemExit("No parseable bucket ranges (expected bucket names like '0-50').")
+        raise SystemExit(
+            f"No parseable bucket ranges for task={task!r} "
+            "(expected bucket names like '0-50')."
+        )
 
     def series_buckets(sk: tuple[str, frozenset[str]]) -> list[str]:
         return sorted({b for (k, b) in series_to_bucket_vals if k == sk}, key=_bucket_sort_key_plot)
@@ -314,22 +333,52 @@ def plot_task_df(
     min_plotted_x = min(all_plotted_x) if all_plotted_x else 0.0
     shrink_to = _parse_x_axis_shrink(x_axis_break, min_plotted_x)
 
-    def xplt(x: float) -> float:
-        if shrink_to is None:
-            return x
-        return _x_data_to_plot_shrink(x, min_plotted_x, shrink_to)
-
     if use_bins:
         pad = max(0.08 * max(x_max_data + 1.0, 1.0), 0.42)
         x_hi_data = x_max_data + pad
     else:
         pad = max(x_max_data * 0.02, 1.0)
         x_hi_data = x_max_data + pad
+
+    return {
+        "task": task,
+        "sub_keys": sub_keys,
+        "max_series": max_series,
+        "use_bins": use_bins,
+        "x_ticks_mode": x_ticks_mode,
+        "x_tick_step": x_tick_step,
+        "x_tick_ends": x_tick_ends,
+        "ordinal_tick_labels": ordinal_tick_labels,
+        "num_ordinal_bins": num_ordinal_bins,
+        "all_plotted_x": all_plotted_x,
+        "min_plotted_x": min_plotted_x,
+        "shrink_to": shrink_to,
+        "x_hi_data": x_hi_data,
+    }
+
+
+def _draw_task_on_ax(ax, prepared: dict, *, title: str, legend_loc: str) -> None:
+    """Render one prepared task onto an existing matplotlib Axes."""
+    sub_keys = prepared["sub_keys"]
+    max_series = prepared["max_series"]
+    use_bins = prepared["use_bins"]
+    x_ticks_mode = prepared["x_ticks_mode"]
+    x_tick_step = prepared["x_tick_step"]
+    x_tick_ends = prepared["x_tick_ends"]
+    ordinal_tick_labels = prepared["ordinal_tick_labels"]
+    num_ordinal_bins = prepared["num_ordinal_bins"]
+    all_plotted_x = prepared["all_plotted_x"]
+    min_plotted_x = prepared["min_plotted_x"]
+    shrink_to = prepared["shrink_to"]
+    x_hi_data = prepared["x_hi_data"]
+
+    def xplt(x: float) -> float:
+        if shrink_to is None:
+            return x
+        return _x_data_to_plot_shrink(x, min_plotted_x, shrink_to)
+
     x_hi_plot = xplt(x_hi_data)
 
-    mpl.rcParams["axes.titleweight"] = "bold"
-    sns.set_theme(style="whitegrid", palette="dark6", context="talk", font_scale=1.4)
-    fig, ax = plt.subplots(figsize=(12, 7))
     ax.set_title(title)
     ax.tick_params(axis="both", which="major", width=2.0, length=8)
     for spine in ax.spines.values():
@@ -404,11 +453,126 @@ def plot_task_df(
     ax.grid(alpha=0.35, linewidth=1.2)
     if legend_loc != "none":
         ax.legend(loc=legend_loc, fontsize=16, frameon=False, markerscale=1.2)
-    fig.tight_layout()
 
+
+def plot_tasks_df(
+    df,
+    *,
+    tasks: list[str],
+    titles: list[str],
+    output_path: Path,
+    legend_loc: str,
+    group_by: list[str],
+    group_label_mode: str,
+    group_custom_labels: list[str],
+    max_aggregation: str,
+    x_ticks_mode: str,
+    x_tick_step: int,
+    x_axis_break: str | None,
+    num_bins: int | None,
+    ncols: int,
+    plot_size: tuple[float, float],
+) -> None:
+    """Plot one or more tasks; multitask uses a grid of axes sized by ``plot_size``."""
+    try:
+        import matplotlib as mpl
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ModuleNotFoundError as e:
+        raise SystemExit(
+            "Plotting requires pandas, matplotlib, and seaborn. Install them first."
+        ) from e
+
+    if not tasks:
+        raise SystemExit("At least one task is required.")
+    if len(titles) != len(tasks):
+        raise SystemExit(
+            f"Number of titles ({len(titles)}) must match number of tasks ({len(tasks)})."
+        )
+    if ncols < 1:
+        raise SystemExit("--ncols must be >= 1.")
+
+    prepared = [
+        _prepare_task_plot(
+            df,
+            task=task,
+            group_by=group_by,
+            group_label_mode=group_label_mode,
+            group_custom_labels=group_custom_labels,
+            max_aggregation=max_aggregation,
+            x_ticks_mode=x_ticks_mode,
+            x_tick_step=x_tick_step,
+            x_axis_break=x_axis_break,
+            num_bins=num_bins,
+        )
+        for task in tasks
+    ]
+
+    n = len(tasks)
+    ncols_eff = min(ncols, n)
+    nrows = math.ceil(n / ncols_eff)
+    fig_w = plot_size[0] * ncols_eff
+    fig_h = plot_size[1] * nrows
+
+    mpl.rcParams["axes.titleweight"] = "bold"
+    sns.set_theme(style="whitegrid", palette="dark6", context="talk", font_scale=1.4)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols_eff,
+        figsize=(fig_w, fig_h),
+        squeeze=False,
+    )
+
+    for i, prep in enumerate(prepared):
+        r, c = divmod(i, ncols_eff)
+        _draw_task_on_ax(axes[r][c], prep, title=titles[i], legend_loc=legend_loc)
+
+    for j in range(n, nrows * ncols_eff):
+        r, c = divmod(j, ncols_eff)
+        axes[r][c].set_visible(False)
+
+    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
+
+
+def plot_task_df(
+    df,
+    *,
+    task: str,
+    output_path: Path,
+    title: str,
+    legend_loc: str,
+    group_by: list[str],
+    group_label_mode: str,
+    group_custom_labels: list[str],
+    max_aggregation: str,
+    x_ticks_mode: str,
+    x_tick_step: int,
+    x_axis_break: str | None,
+    num_bins: int | None,
+    plot_size: tuple[float, float] | None = None,
+) -> None:
+    """Single-task wrapper around ``plot_tasks_df`` (default size 12x7)."""
+    size = plot_size if plot_size is not None else (12.0, 7.0)
+    plot_tasks_df(
+        df,
+        tasks=[task],
+        titles=[title],
+        output_path=output_path,
+        legend_loc=legend_loc,
+        group_by=group_by,
+        group_label_mode=group_label_mode,
+        group_custom_labels=group_custom_labels,
+        max_aggregation=max_aggregation,
+        x_ticks_mode=x_ticks_mode,
+        x_tick_step=x_tick_step,
+        x_axis_break=x_axis_break,
+        num_bins=num_bins,
+        ncols=1,
+        plot_size=size,
+    )
 
 
 def _dump_selected_rows(df, *, group_by: list[str], selected_cols: list[str]) -> None:
@@ -440,7 +604,48 @@ def main() -> int:
     default_plot_dir = repo_root / "exports" / "plots"
 
     parser.add_argument("--input-csv", "--csv", dest="input_csv", type=Path, default=default_csv)
-    parser.add_argument("--task", type=str, required=True, help="Task value from CSV task column.")
+    parser.add_argument(
+        "--task",
+        type=str,
+        default=None,
+        help="Task value from CSV task column (required unless --multitask is set).",
+    )
+    parser.add_argument(
+        "--multitask",
+        type=str,
+        default="",
+        help=(
+            "CSV-style comma-separated task names to plot in a grid. "
+            'Example: --multitask "012_star_0_2_star,aa_star,ab_star_d_bc_star". '
+            "Mutually exclusive with --task."
+        ),
+    )
+    parser.add_argument(
+        "--ncols",
+        type=int,
+        default=2,
+        help="Number of subplot axes per row when using --multitask (default: 2).",
+    )
+    parser.add_argument(
+        "--multititles",
+        type=str,
+        default="",
+        help=(
+            "CSV-style comma-separated titles for --multitask panels, in task order. "
+            "Defaults to the task names when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--plot-size",
+        type=str,
+        default=None,
+        metavar="WxH",
+        help=(
+            "Size of each individual axis plot in inches as W,H or WxH. "
+            "Single-task default: 12x7. Multitask default: 6x5. "
+            "Figure size is ncols*W by nrows*H."
+        ),
+    )
     parser.add_argument(
         "--output",
         "--plot-path",
@@ -563,6 +768,8 @@ def main() -> int:
         raise SystemExit("--x-tick-step must be >= 1.")
     if args.num_bins is not None and args.num_bins < 1:
         raise SystemExit("--num-bins must be >= 1.")
+    if args.ncols < 1:
+        raise SystemExit("--ncols must be >= 1.")
     custom_labels = _parse_custom_group_labels(args.group_custom_labels)
     if args.group_label_mode != "custom" and custom_labels:
         raise SystemExit("--group-custom-labels is only valid with --group-label-mode custom.")
@@ -570,6 +777,38 @@ def main() -> int:
         args.max_aggregation = "pareto_mean"
     elif args.max_aggregation == "max":
         args.max_aggregation = "bin_max"
+
+    multitask = _parse_custom_group_labels(args.multitask)
+    if multitask and args.task:
+        raise SystemExit("Use either --task or --multitask, not both.")
+    if not multitask and not args.task:
+        raise SystemExit("Provide --task or --multitask.")
+
+    multititles = _parse_custom_group_labels(args.multititles)
+    plot_size = _parse_plot_size(args.plot_size)
+
+    if multitask:
+        tasks = multitask
+        if multititles:
+            if len(multititles) != len(tasks):
+                raise SystemExit(
+                    f"--multititles count ({len(multititles)}) must match "
+                    f"--multitask count ({len(tasks)})."
+                )
+            titles = multititles
+        else:
+            titles = list(tasks)
+        if args.title is not None:
+            raise SystemExit("Use --multititles with --multitask, not --title.")
+        size = plot_size if plot_size is not None else (6.0, 5.0)
+        default_name = "multitask_csv_df.png" if len(tasks) > 1 else f"{tasks[0]}_csv_df.png"
+    else:
+        tasks = [args.task]
+        titles = [args.title or args.task]
+        if multititles:
+            raise SystemExit("--multititles requires --multitask.")
+        size = plot_size if plot_size is not None else (12.0, 7.0)
+        default_name = f"{args.task}_csv_df.png"
 
     df = pd.read_csv(args.input_csv)
     if df.empty:
@@ -584,13 +823,12 @@ def main() -> int:
         if args.dump_selected_only:
             return 0
 
-    plot_path = args.output_path or (default_plot_dir / f"{args.task}_csv_df.png")
-    title = args.title or args.task
-    plot_task_df(
+    plot_path = args.output_path or (default_plot_dir / default_name)
+    plot_tasks_df(
         df,
-        task=args.task,
+        tasks=tasks,
+        titles=titles,
         output_path=plot_path,
-        title=title,
         legend_loc=args.legend_loc,
         group_by=args.group_by,
         group_label_mode=args.group_label_mode,
@@ -600,6 +838,8 @@ def main() -> int:
         x_tick_step=args.x_tick_step,
         x_axis_break=args.x_axis_break,
         num_bins=args.num_bins,
+        ncols=args.ncols if multitask else 1,
+        plot_size=size,
     )
     print(f"Wrote plot: {plot_path}")
     return 0
