@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 try:
     from utils import RunConfig
 except ImportError:
@@ -210,6 +212,60 @@ def build_curriculum_datasets(run_config: RunConfig):
 
 
 # ── Formal-language dataset construction ────────────────────────────────────
+#
+# Per-task corpus specs mirroring formal_lang_suite/configs/dataset/*.yaml, so that
+# this on-the-fly pipeline (algorithmic/task_datasets.py's duplicated generators)
+# trains/evaluates on the same length windows and corpus sizes as formal_lang_suite
+# instead of RunConfig's generic (0, 50) / 3-equal-bins default. `an_star_a2` has no
+# formal_lang_suite counterpart and keeps using RunConfig-derived defaults below.
+@dataclass(frozen=True)
+class _FormalTaskSpec:
+    lower_window: int
+    upper_window: int
+    len_incr: int
+    num_bins: int  # total eval bins: bin0 = in-distribution (train window), rest = OOD
+    train_size: int
+    test_size: int
+
+
+_FORMAL_TASK_SPECS: dict[str, _FormalTaskSpec] = {
+    "tomita_1": _FormalTaskSpec(1, 100, 50, 3, 1000, 50),
+    "tomita_2": _FormalTaskSpec(1, 100, 50, 3, 1000, 25),
+    "tomita_3": _FormalTaskSpec(1, 100, 50, 3, 10000, 2000),
+    "tomita_4": _FormalTaskSpec(1, 100, 50, 3, 10000, 2000),
+    "tomita_5": _FormalTaskSpec(1, 100, 50, 4, 10000, 2000),
+    "tomita_6": _FormalTaskSpec(1, 100, 50, 4, 10000, 10000),
+    "tomita_7": _FormalTaskSpec(1, 100, 50, 3, 10000, 2000),
+    "d_2": _FormalTaskSpec(2, 50, 50, 3, 200, 25),
+    "d_3": _FormalTaskSpec(2, 50, 50, 3, 10000, 2000),
+    "d_4": _FormalTaskSpec(2, 100, 100, 3, 10000, 2000),
+    "d_12": _FormalTaskSpec(2, 100, 100, 3, 10000, 2000),
+    # formal_lang_suite's "AAStar" dataset (num_par=2); its "AAAAStar" (num_par=4)
+    # variant has no corresponding algorithmic task name.
+    "aa_star": _FormalTaskSpec(2, 100, 50, 3, 40, 10),
+    "abab_star": _FormalTaskSpec(4, 500, 100, 3, 125, 25),
+    "aa_star_bb_star": _FormalTaskSpec(5, 200, 100, 3, 10000, 2000),
+    "ab_star_d_bc_star": _FormalTaskSpec(2, 50, 50, 3, 10000, 2000),
+    "012_star_0_2_star": _FormalTaskSpec(2, 50, 50, 3, 10000, 2000),
+}
+
+
+def _formal_task_length_ranges(spec: _FormalTaskSpec) -> tuple[tuple[int, int], list[tuple[int, int]]]:
+    """bin0 = in-distribution (train) window; later bins grow by `len_incr` each,
+    non-overlapping. Mirrors formal_lang_suite's Tomita/D_n/NonStarFree bin
+    construction -- deliberately NOT its buggy StarFreeSpecial one (used for
+    `ab_star_d_bc_star`/`012_star_0_2_star` there), which never advances
+    `lower_window` and so re-includes short, in-distribution lengths in the
+    later "OOD" bins.
+    """
+    train_range = (spec.lower_window, spec.upper_window)
+    bins = [train_range]
+    lo, hi = train_range
+    for _ in range(spec.num_bins - 1):
+        lo, hi = hi + 1, hi + spec.len_incr
+        bins.append((lo, hi))
+    return train_range, bins
+
 
 def _make_tokenizer_and_n_positions(train_source, train_target, test_bins):
     all_src = list(train_source)
@@ -225,12 +281,17 @@ def _make_tokenizer_and_n_positions(train_source, train_target, test_bins):
 
 
 def _build_formal_datasets(run_config: RunConfig):
-    train_length_range = run_config.train_length_range
-    test_length_ranges = run_config.test_length_ranges
-    test_num = run_config.test_num
     task = run_config.task
-
-    train_num = max(4 * test_num, 1000)
+    spec = _FORMAL_TASK_SPECS.get(task)
+    if spec is not None:
+        train_length_range, test_length_ranges = _formal_task_length_ranges(spec)
+        train_num = spec.train_size
+        test_num = spec.test_size
+    else:
+        train_length_range = run_config.train_length_range
+        test_length_ranges = run_config.test_length_ranges
+        test_num = run_config.test_num
+        train_num = max(4 * test_num, 1000)
     lower_window, upper_window = train_length_range
 
     if task.startswith("tomita_"):
