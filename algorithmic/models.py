@@ -1,6 +1,7 @@
 import copy
 import importlib
 import logging
+from functools import partial
 from typing import Iterator, Optional
 
 from transformers import GPT2LMHeadModel, GPT2Config
@@ -10,6 +11,10 @@ import torch
 import torch.nn as nn
 
 from mambapy.mamba import ResidualBlock as MambaResidualBlock
+from mamba_ssm import Mamba2, Mamba3
+from mamba_ssm.modules.block import Block as MambaSSMBlock
+from mamba_ssm.ops.triton.layer_norm import RMSNorm as MambaSSMRMSNorm
+
 from olmo_core.nn.transformer.config import TransformerConfig, TransformerBlockConfig
 from olmo_core.nn.attention import Attention, AttentionConfig
 from olmo_core.nn.attention.recurrent import GatedDeltaNet, GatedDeltaNetConfig
@@ -110,13 +115,74 @@ if tuple(map(int, torch.__version__.split('.')[:2])) >= (1, 12):
 else:
     dropout_fn = nn.Dropout2d
 
+class MambaSSMResidualBlock(nn.Module):
+    """Residual block wrapper for `mamba_ssm`'s Mamba2/Mamba3 mixers, matching the exact
+    ``forward(x) -> x`` interface of `mambapy`'s ``ResidualBlock`` (used for the "mamba" kernel,
+    see ``MambaResidualBlock`` above) so the rest of the codebase (``SSMModel``,
+    ``HybridSSMTransformerModel``, ``make_ssm_module``) can treat all three kernels identically:
+    single tensor in, single (same-shape) tensor out, with the residual connection handled
+    internally by the block.
+
+    `mamba_ssm` has no drop-in equivalent of `mambapy`'s ``ResidualBlock``: its own reference
+    workflow for stacking mixers (``mamba_ssm.models.mixer_seq_simple.create_block``, used to
+    build ``MixerModel``/``MambaLMHeadModel``) instead builds a ``mamba_ssm.modules.block.Block``
+    per layer and threads an explicit ``residual`` tensor through consecutive layers so that
+    add+norm can be fused for performance. Since we only need one mixer at a time here (the
+    surrounding MLP/dropout/norm and residual across blocks are already handled one level up by
+    the caller), we reuse that same ``Block`` with ``mlp_cls=nn.Identity`` and simply do the
+    add-back ourselves: passing ``residual=None`` in makes ``Block`` compute
+    ``hidden_states = mixer(norm(x))`` and return ``residual = x``, so
+    ``hidden_states + residual == mixer(norm(x)) + x`` -- exactly `mambapy`'s ``ResidualBlock``.
+    """
+
+    def __init__(self, mixer_cls, dim: int, norm_eps: float = 1e-5):
+        super().__init__()
+        self.block = MambaSSMBlock(
+            dim,
+            mixer_cls,
+            mlp_cls=nn.Identity,
+            norm_cls=partial(MambaSSMRMSNorm, eps=norm_eps),
+            fused_add_norm=False,
+        )
+
+    def forward(self, x):
+        hidden_states, residual = self.block(x, residual=None)
+        return hidden_states + residual
+
+
+def _mamba_ssm_headdim(d_model: int, expand: int, preferred: int = 64) -> int:
+    """Pick a `headdim` for Mamba2/Mamba3 that evenly divides `d_inner = expand * d_model`
+    (both require ``d_inner % headdim == 0``), staying as close as possible to `preferred`
+    without requiring extra config plumbing through `ArchSlot`/`SSMConfig` -- this mirrors
+    ``_olmo_head_dim`` above in spirit, but searches for an exact divisor since Mamba2/Mamba3
+    (unlike the OLMo GDN head-dim helper) assert exact divisibility rather than tolerating
+    rounding.
+    """
+    d_inner = expand * d_model
+    for headdim in range(min(preferred, d_inner), 0, -1):
+        if d_inner % headdim == 0:
+            return headdim
+    return d_inner
+
+
 def make_ssm_module(config: SSMConfig):
     k = config.ssm_kernel.lower().strip()
     if k == "s4":
         return S4D(config.n_embd, dropout=config.dropout, transposed=False)
     if k == "mamba":
         return MambaResidualBlock(mamba_config_from_ssm_config(config))
-    raise ValueError(f"Unknown ssm_kernel {config.ssm_kernel!r} (expected 's4' or 'mamba').")
+    if k in ("mamba2", "mamba3"):
+        mamba_cls = Mamba2 if k == "mamba2" else Mamba3
+        expand = 2
+        mixer_cls = partial(
+            mamba_cls,
+            expand=expand,
+            headdim=_mamba_ssm_headdim(config.n_embd, expand),
+        )
+        return MambaSSMResidualBlock(mixer_cls, config.n_embd)
+    raise ValueError(
+        f"Unknown ssm_kernel {config.ssm_kernel!r} (expected 's4', 'mamba', 'mamba2', or 'mamba3')."
+    )
 
 
 class SSMModel(nn.Module):

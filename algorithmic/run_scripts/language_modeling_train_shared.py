@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--noln", action="store_true", help="Disable layer norm in architecture slots")
     parser.add_argument("--regularize", type=float, default=0.0)
-    parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba"])
+    parser.add_argument("--ssm-kernel", type=str, default="s4", choices=["s4", "mamba", "mamba2", "mamba3"])
     parser.add_argument("--hybrid-layer-pattern", type=str, default="sa")
 
     parser.add_argument(
@@ -136,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of trainer steps to run at each curriculum stage before growing the length.",
     )
 
+    parser.add_argument("--early-stop", action="store_true")
+
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--report-to", type=str, default="wandb", choices=["none", "wandb"])
     parser.add_argument("--wandb-project", type=str, default=None)
@@ -178,6 +180,7 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.freeze_fraction = args.freeze_fraction if args.freeze_fraction is not None else 0.0
 
     rc.train_length_range = args.train_length_range
+    rc.early_stop = args.early_stop
 
     curriculum_args = {
         "--curriculum-num-steps": args.curriculum_num_steps,

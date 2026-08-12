@@ -198,6 +198,7 @@ class AlgorithmicTrainCallback(TrainerCallback):
         self.latest_acc: dict[str, float] = {}
         self.current_epoch: float = 0.0
         self.use_wandb = use_wandb
+        self.early_stop = run_config.early_stop
         self.metric_prefix = metric_prefix
         # Eval metrics use length bins from ``test_ranges`` (e.g. eval_len0-49_acc), not train_length_range
         # (which can differ by one from the first bin). Wrong keys → no early stop / no train/acc in W&B.
@@ -235,7 +236,9 @@ class AlgorithmicTrainCallback(TrainerCallback):
         if wandb_eval:
             self._log_to_wandb(wandb_eval, state.global_step)
         if len(self.latest_acc) == len(self.test_length_ranges):
-            solved_train = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
+            solved_train = False
+            if self.early_stop:
+                solved_train = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
             epoch_done_one = self.current_epoch >= 1.0 and not self._logged_epoch_summary
             if solved_train:
                 control.should_training_stop = True
@@ -462,6 +465,7 @@ class CurriculumTrainCallback(TrainerCallback):
         # step-capped), not that training as a whole should halt. Reset every time a
         # new stage begins; see class docstring.
         self.stop_state: dict[str, Any] = {"should_stop": False, "fit_train_data": False}
+        self.early_stop = run_config.early_stop
 
     def _stage_eval_keys(self, stage_idx: int) -> list[str]:
         return [f"eval_{name}_acc" for name in self.stage_eval_datasets[stage_idx]]
@@ -502,7 +506,10 @@ class CurriculumTrainCallback(TrainerCallback):
         if len(self.latest_acc) < len(self._eval_acc_keys):
             return  # still waiting on the other length bins for this stage
 
-        solved = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
+        solved = False
+        if self.early_stop:
+            solved = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
+            
         step_cap_reached = (state.global_step - self.stage_start_step) >= self.curriculum.steps_per_stage
         if not (solved or step_cap_reached):
             # Stage still in progress: don't log or advance yet, just keep training
