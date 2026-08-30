@@ -120,7 +120,11 @@ def format_log_prefix(
         ]
     elif run_config.model_family == "ssm":
         arch_str = "ssm" if not run_config.use_olmo_core else "olmo"
-        kernel_str = run_config.ssm_kernel if not run_config.use_olmo_core else "gdn"
+        kernel_str = (
+            run_config.ssm_kernel
+            if not run_config.use_olmo_core
+            else run_config.olmo_gdn_variant
+        )
         parts += [
             arch_str,
             kernel_str,
@@ -134,11 +138,15 @@ def format_log_prefix(
     else:
         arch_str = "hyb" if not run_config.use_olmo_core else "olmohyb"
         pat = run_config.hybrid_layer_pattern
-        kernel_str = run_config.ssm_kernel if not run_config.use_olmo_core else ""
+        kernel_str = (
+            run_config.ssm_kernel
+            if not run_config.use_olmo_core
+            else run_config.olmo_gdn_variant
+        )
         parts += [
             arch_str,
-            kernel_str,
             pat,
+            kernel_str,
             f"{arch.n_layer}l",
             f"{arch.n_head}h",
             f"{arch.d_model}d",

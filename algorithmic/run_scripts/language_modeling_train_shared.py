@@ -78,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
             "--regularize, --ssm-kernel, --noln, and/or --nope."
         ),
     )
+    parser.add_argument(
+        "--olmo-gdn-variant",
+        type=str,
+        default="gdn2",
+        choices=["gdn1", "gdn2"],
+        help="Gated DeltaNet mixer used by OLMo-core SSM and hybrid models.",
+    )
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--noln", action="store_true", help="Disable layer norm in architecture slots")
     parser.add_argument("--regularize", type=float, default=0.0)
@@ -163,6 +170,7 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
 
     rc.use_nope = args.nope
     rc.use_olmo_core = args.use_olmo
+    rc.olmo_gdn_variant = args.olmo_gdn_variant
     rc.regularize = args.regularize
     rc.ssm_kernel = args.ssm_kernel
     rc.hybrid_layer_pattern = args.hybrid_layer_pattern.strip().lower()

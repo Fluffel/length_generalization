@@ -55,11 +55,14 @@ _WEIGHTS_NAME_RE_LEGACY = re.compile(
     r"^hyb(as|sa)(\d+)l(\d+)h(\d+)d([0-9.]+)dr(smalllr)?_weights(?:_seed\d+_id\d+)?\.pt$"
 )
 _WEIGHTS_NAME_RE_MODULAR = re.compile(
-    r"^hyb(.+?)(\d+)l(\d+)h(\d+)d([0-9.]+)dr(\d+)mlp(nope|pe)(noln|ln)"
+    r"^hyb([as]+)(mamba3|mamba2|mamba|s4)(\d+)l(\d+)h(\d+)d([0-9.]+)dr"
+    r"(\d+)mlp(nope|pe)(noln|ln)"
+    r"(?:frz(?:a|ssm)[0-9.]+)?"
     r"stp([0-9.]+)k([0-9eE+\-\.]+)lr_weights(?:_seed\d+_id\d+)?\.pt$"
 )
 _WEIGHTS_NAME_RE_OLMO = re.compile(
-    r"^olmohyb([as]+)(\d+)l(\d+)h(\d+)d([0-9.]+)dr"
+    r"^olmohyb([as]+)(gdn[12])?(\d+)l(\d+)h(\d+)d([0-9.]+)dr"
+    r"(?:ne|none)?(?:frz(?:a|ssm)[0-9.]+)?"
     r"stp([0-9.]+)k([0-9eE+\-\.]+)lr_weights(?:_seed\d+_id\d+)?\.pt$"
 )
 
@@ -68,7 +71,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
     base = os.path.basename(path)
     m = _WEIGHTS_NAME_RE_OLMO.match(base)
     if m:
-        motif, n_rep, nh, nd, _dr_s, _steps_k, _lr = m.groups()
+        motif, gdn_variant, n_rep, nh, nd, _dr_s, _steps_k, _lr = m.groups()
         return {
             "layer_pattern": motif,
             "n_pattern_repeats": int(n_rep),
@@ -77,22 +80,25 @@ def parse_architecture_from_weights_path(path: str) -> dict:
             "between_block_mlp_layers": 1,
             "layer_norm": True,
             "nope": None,  # OLMo weight names do not currently encode rope/no-rope.
-            "ssm_kernel": "gdn",
+            "ssm_kernel": gdn_variant or "gdn1",
+            "olmo_gdn_variant": gdn_variant or "gdn1",
             "olmo": True,
         }
     m = _WEIGHTS_NAME_RE_MODULAR.match(base)
     if m:
-        pattern_and_kernel, n_rep, nh, nd, _dr_s, mlp_layers, pe_mode, ln_mode, _steps_k, _lr = m.groups()
-        i = 0
-        while i < len(pattern_and_kernel) and pattern_and_kernel[i] in "as":
-            i += 1
-        layer_pattern = pattern_and_kernel[:i]
-        ssm_kernel = pattern_and_kernel[i:] if i < len(pattern_and_kernel) else "s4"
-        if not layer_pattern:
-            raise ValueError(
-                f"Could not parse layer_pattern from modular filename {base!r}. "
-                "Expected a prefix like hybsa... or hybas..."
-            )
+        (
+            layer_pattern,
+            ssm_kernel,
+            n_rep,
+            nh,
+            nd,
+            _dr_s,
+            mlp_layers,
+            pe_mode,
+            ln_mode,
+            _steps_k,
+            _lr,
+        ) = m.groups()
         return {
             "layer_pattern": layer_pattern,
             "n_pattern_repeats": int(n_rep),
@@ -321,6 +327,15 @@ def main():
             "encoding is used instead of GPT-2 absolute embeddings."
         ),
     )
+    parser.add_argument(
+        "--olmo-gdn-variant",
+        choices=["gdn1", "gdn2"],
+        default=None,
+        help=(
+            "Override the OLMo GDN variant. New checkpoint filenames encode this; "
+            "legacy OLMo checkpoints default to gdn1."
+        ),
+    )
     parser.add_argument("--model-family", type=str, default="hybrid", choices=["hybrid", "transformer", "ssm"])
     parser.add_argument("--n-layer", type=int, default=None)
     parser.add_argument("--n-head", type=int, default=None)
@@ -390,6 +405,7 @@ def main():
     use_olmo = args.use_olmo or inferred_olmo
     if inferred_olmo and not args.use_olmo:
         print("[info] Inferred OLMo checkpoint from filename; enabling --use-olmo.")
+    olmo_gdn_variant = args.olmo_gdn_variant or arch.get("olmo_gdn_variant", "gdn1")
 
     state = torch.load(args.weights, map_location="cpu")
     max_test_length = infer_max_test_length_from_state(args.task, state, MAX_TEST_LENGTH)
@@ -445,8 +461,9 @@ def main():
         architectures=[arch_slot],
         use_nope=nope,
         use_olmo_core=use_olmo,
+        olmo_gdn_variant=olmo_gdn_variant,
         hybrid_layer_pattern=arch["layer_pattern"],
-        # OLMo hybrid path always maps SSM layers to GatedDeltaNet internally.
+        # The OLMo hybrid path maps SSM layers to the selected GatedDeltaNet variant.
         ssm_kernel="s4" if use_olmo else arch["ssm_kernel"],
     )
     model = build_model(run_config, arch_slot, tokenizer, train_ds.n_positions)

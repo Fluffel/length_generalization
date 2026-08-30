@@ -11,13 +11,19 @@ import torch
 import torch.nn as nn
 
 from mambapy.mamba import ResidualBlock as MambaResidualBlock
-from mamba_ssm import Mamba2, Mamba3
-from mamba_ssm.modules.block import Block as MambaSSMBlock
-from mamba_ssm.ops.triton.layer_norm import RMSNorm as MambaSSMRMSNorm
+# from mamba_ssm import Mamba2, Mamba3
+# from mamba_ssm.modules.block import Block as MambaSSMBlock
+# from mamba_ssm.ops.triton.layer_norm import RMSNorm as MambaSSMRMSNorm
 
 from olmo_core.nn.transformer.config import TransformerConfig, TransformerBlockConfig
 from olmo_core.nn.attention import Attention, AttentionConfig
 from olmo_core.nn.attention.recurrent import GatedDeltaNet, GatedDeltaNetConfig
+try:
+    from olmo_core.nn.attention.recurrent import GatedDeltaNet2, GatedDeltaNet2Config
+except (ImportError, AttributeError):
+    # GDN2 is newer than GDN1 and is not available in every OLMo-core revision.
+    GatedDeltaNet2 = None
+    GatedDeltaNet2Config = None
 from utils import ArchSlot, HybridConfig, RunConfig, SSMConfig, create_hybrid_config, create_ssm_config, create_transformer_config, mamba_config_from_ssm_config
 from utils import run_length_encode
 from model_extensions import S4D, CustomMLP, set_identity_layernorms
@@ -137,13 +143,13 @@ class MambaSSMResidualBlock(nn.Module):
 
     def __init__(self, mixer_cls, dim: int, norm_eps: float = 1e-5):
         super().__init__()
-        self.block = MambaSSMBlock(
-            dim,
-            mixer_cls,
-            mlp_cls=nn.Identity,
-            norm_cls=partial(MambaSSMRMSNorm, eps=norm_eps),
-            fused_add_norm=False,
-        )
+        # self.block = MambaSSMBlock(
+        #     dim,
+        #     mixer_cls,
+        #     mlp_cls=nn.Identity,
+        #     norm_cls=partial(MambaSSMRMSNorm, eps=norm_eps),
+        #     fused_add_norm=False,
+        # )
 
     def forward(self, x):
         hidden_states, residual = self.block(x, residual=None)
@@ -171,15 +177,15 @@ def make_ssm_module(config: SSMConfig):
         return S4D(config.n_embd, dropout=config.dropout, transposed=False)
     if k == "mamba":
         return MambaResidualBlock(mamba_config_from_ssm_config(config))
-    if k in ("mamba2", "mamba3"):
-        mamba_cls = Mamba2 if k == "mamba2" else Mamba3
-        expand = 2
-        mixer_cls = partial(
-            mamba_cls,
-            expand=expand,
-            headdim=_mamba_ssm_headdim(config.n_embd, expand),
-        )
-        return MambaSSMResidualBlock(mixer_cls, config.n_embd)
+    # if k in ("mamba2", "mamba3"):
+    #     mamba_cls = Mamba2 if k == "mamba2" else Mamba3
+    #     expand = 2
+    #     mixer_cls = partial(
+    #         mamba_cls,
+    #         expand=expand,
+    #         headdim=_mamba_ssm_headdim(config.n_embd, expand),
+    #     )
+    #     return MambaSSMResidualBlock(mixer_cls, config.n_embd)
     raise ValueError(
         f"Unknown ssm_kernel {config.ssm_kernel!r} (expected 's4', 'mamba', 'mamba2', or 'mamba3')."
     )
@@ -523,7 +529,10 @@ def hybrid_group_parameters(model: nn.Module, group: str) -> Iterator[nn.Paramet
         return
 
     if isinstance(model, OLMoCoreCausalLMAdapter):
-        target_cls = GatedDeltaNet if group == "ssm" else Attention
+        gdn_classes = tuple(
+            cls for cls in (GatedDeltaNet, GatedDeltaNet2) if cls is not None
+        )
+        target_cls = gdn_classes if group == "ssm" else Attention
         for block in model.model.blocks.values():
             if isinstance(block.attention, target_cls):
                 yield from block.parameters()
@@ -534,19 +543,36 @@ def hybrid_group_parameters(model: nn.Module, group: str) -> Iterator[nn.Paramet
     )
 
 
-def _require_olmo_core():
-    global TransformerConfig, AttentionConfig, GatedDeltaNetConfig, TransformerBlockConfig
+def _require_olmo_core(*, require_gdn2: bool = False):
+    global TransformerConfig, Attention, AttentionConfig
+    global GatedDeltaNetConfig, GatedDeltaNet2Config
+    global GatedDeltaNet, GatedDeltaNet2, TransformerBlockConfig
     if all(x is not None for x in (TransformerConfig, AttentionConfig, GatedDeltaNetConfig, TransformerBlockConfig)):
-        return
+        if not require_gdn2 or GatedDeltaNet2Config is not None:
+            return
 
     try:
         TransformerConfig = importlib.import_module("olmo_core.nn.transformer").TransformerConfig
-        AttentionConfig = importlib.import_module("olmo_core.nn.attention").AttentionConfig
-        GatedDeltaNetConfig = importlib.import_module("olmo_core.nn.attention.recurrent").GatedDeltaNetConfig
+        attention_module = importlib.import_module("olmo_core.nn.attention")
+        recurrent_module = importlib.import_module("olmo_core.nn.attention.recurrent")
+        Attention = attention_module.Attention
+        AttentionConfig = attention_module.AttentionConfig
+        GatedDeltaNet = recurrent_module.GatedDeltaNet
+        GatedDeltaNetConfig = recurrent_module.GatedDeltaNetConfig
         TransformerBlockConfig = importlib.import_module("olmo_core.nn.transformer.config").TransformerBlockConfig
-    except ImportError as exc:
+        if require_gdn2:
+            GatedDeltaNet2 = recurrent_module.GatedDeltaNet2
+            GatedDeltaNet2Config = recurrent_module.GatedDeltaNet2Config
+    except (ImportError, AttributeError) as exc:
+        if require_gdn2:
+            raise ImportError(
+                "GDN2 requires an OLMo-core revision that provides "
+                "GatedDeltaNet2 and GatedDeltaNet2Config."
+            ) from exc
         raise ImportError(
-            "OLMo-core is not available. Install `olmo-core` to use run_config.use_olmo_core=True. See this official repo for installation https://github.com/allenai/OLMo-core/blob/main/README.md. Installation needs to be done by cloning the official git repository and not the ai2-olmo-core package."
+            "OLMo-core is not available. Install `olmo-core` to use "
+            "run_config.use_olmo_core=True. See "
+            "https://github.com/allenai/OLMo-core/blob/main/README.md."
         ) from exc
 
 
@@ -559,6 +585,54 @@ def _olmo_head_dim(arch: ArchSlot, run_config: RunConfig) -> int:
             f"Reduce olmo_gdn_head_dim_multiplier (currently {run_config.olmo_gdn_head_dim_multiplier})."
         )
     return head_dim
+
+
+def _build_olmo_gdn1_config(run_config: RunConfig, arch: ArchSlot):
+    """Build the original GatedDeltaNet sequence-mixer configuration."""
+    _require_olmo_core()
+    return GatedDeltaNetConfig(
+        n_heads=arch.n_head,
+        head_dim=_olmo_head_dim(arch, run_config),
+        expand_v=run_config.olmo_gdn_expand_v,
+        allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
+    )
+
+
+def _build_olmo_gdn2_config(run_config: RunConfig, arch: ArchSlot):
+    """Build the channel-wise GatedDeltaNet2 sequence-mixer configuration."""
+    _require_olmo_core(require_gdn2=True)
+    return GatedDeltaNet2Config(
+        n_heads=arch.n_head,
+        head_dim=_olmo_head_dim(arch, run_config),
+        expand_v=run_config.olmo_gdn_expand_v,
+        allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
+    )
+
+
+def _build_olmo_gdn_config(run_config: RunConfig, arch: ArchSlot):
+    variant = run_config.olmo_gdn_variant.lower().strip()
+    if variant == "gdn1":
+        return _build_olmo_gdn1_config(run_config, arch)
+    if variant == "gdn2":
+        return _build_olmo_gdn2_config(run_config, arch)
+    raise ValueError(
+        f"Unknown olmo_gdn_variant {run_config.olmo_gdn_variant!r}; "
+        "expected 'gdn1' or 'gdn2'."
+    )
+
+
+def _materialize_olmo_model(cfg, *, max_seq_len: int) -> OLMoCoreCausalLMAdapter:
+    """Build and initialize an OLMo model according to OLMo-core's two-step API."""
+    if max_seq_len <= 0:
+        raise ValueError(f"max_seq_len must be positive, got {max_seq_len}.")
+
+    # OLMo-core constructors intentionally leave parameters such as the GDN
+    # recurrence gates uninitialized. Building on meta avoids doing a throwaway
+    # PyTorch initialization before OLMo's model-wide initializer materializes
+    # every parameter on CPU.
+    model = cfg.build(init_device="meta")
+    model.init_weights(max_seq_len=max_seq_len, device=torch.device("cpu"))
+    return OLMoCoreCausalLMAdapter(model)
 
 
 def _build_olmo_base_transformer_config(
@@ -583,7 +657,9 @@ def _build_olmo_base_transformer_config(
     return cfg
 
 
-def _build_olmo_transformer_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+def _build_olmo_transformer_model(
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+):
     cfg = _build_olmo_base_transformer_config(
         vocab_size=len(tokenizer),
         n_layers=arch.n_layer,
@@ -593,28 +669,26 @@ def _build_olmo_transformer_model(run_config: RunConfig, arch: ArchSlot, tokeniz
         cfg.block = cfg.block.replace(
             sequence_mixer=cfg.block.sequence_mixer.replace(rope=None)
         )
-    model = cfg.build()
-    return OLMoCoreCausalLMAdapter(model)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
 
 
-def _build_olmo_gdn_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+def _build_olmo_gdn_model(
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+):
     cfg = _build_olmo_base_transformer_config(
         vocab_size=len(tokenizer),
         n_layers=arch.n_layer,
         arch=arch,
     )
-    gdn_cfg = GatedDeltaNetConfig(
-        n_heads=arch.n_head,
-        head_dim=_olmo_head_dim(arch, run_config),
-        expand_v=run_config.olmo_gdn_expand_v,
-        allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
+    cfg.block = cfg.block.replace(
+        sequence_mixer=_build_olmo_gdn_config(run_config, arch)
     )
-    cfg.block = cfg.block.replace(sequence_mixer=gdn_cfg)
-    model = cfg.build()
-    return OLMoCoreCausalLMAdapter(model)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
 
 
-def _build_olmo_hybrid_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
+def _build_olmo_hybrid_model(
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+):
     motif = run_config.hybrid_layer_pattern.strip().lower()
     if not motif or any(c not in "as" for c in motif):
         raise ValueError(
@@ -635,18 +709,12 @@ def _build_olmo_hybrid_model(run_config: RunConfig, arch: ArchSlot, tokenizer):
     else:
         attn_block = cfg.block
     gdn_block = attn_block.replace(
-        sequence_mixer=GatedDeltaNetConfig(
-            n_heads=arch.n_head,
-            head_dim=_olmo_head_dim(arch, run_config),
-            expand_v=run_config.olmo_gdn_expand_v,
-            allow_neg_eigval=run_config.olmo_gdn_allow_neg_eigval,
-        )
+        sequence_mixer=_build_olmo_gdn_config(run_config, arch)
     )
     cfg.block = {"attn": attn_block, "gdn": gdn_block}
     cfg.block_pattern = ["attn" if c == "a" else "gdn" for c in pattern]
 
-    model = cfg.build()
-    return OLMoCoreCausalLMAdapter(model)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
 
 def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int):
     if run_config.use_olmo_core:
@@ -663,20 +731,28 @@ def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: i
         match run_config.model_family:
             case "transformer":
                 LOGGER.info("Building OLMo-core transformer model")
-                return _build_olmo_transformer_model(run_config, arch, tokenizer)
+                return _build_olmo_transformer_model(
+                    run_config, arch, tokenizer, n_positions
+                )
             case "ssm":
                 LOGGER.info(
-                    "Building OLMo-core standalone GDN model allow_neg_eigval=%s",
+                    "Building OLMo-core standalone %s model allow_neg_eigval=%s",
+                    run_config.olmo_gdn_variant,
                     run_config.olmo_gdn_allow_neg_eigval,
                 )
-                return _build_olmo_gdn_model(run_config, arch, tokenizer)
+                return _build_olmo_gdn_model(
+                    run_config, arch, tokenizer, n_positions
+                )
             case "hybrid":
                 LOGGER.info(
-                    "Building OLMo-core hybrid model pattern=%s allow_neg_eigval=%s",
+                    "Building OLMo-core hybrid model pattern=%s mixer=%s allow_neg_eigval=%s",
                     run_config.hybrid_layer_pattern,
+                    run_config.olmo_gdn_variant,
                     run_config.olmo_gdn_allow_neg_eigval,
                 )
-                return _build_olmo_hybrid_model(run_config, arch, tokenizer)
+                return _build_olmo_hybrid_model(
+                    run_config, arch, tokenizer, n_positions
+                )
             case _:
                 raise ValueError(run_config.model_family)
 

@@ -218,6 +218,9 @@ class RunConfig:
     # SSM / hybrid SSM blocks
     ssm_kernel: str = "s4"
     # OLMo GatedDeltaNet (used when use_olmo_core=True for ssm/hybrid).
+    # Keep gdn1 as the default so existing configurations and checkpoints retain
+    # their architecture; set this to "gdn2" for the channel-wise GDN2 mixer.
+    olmo_gdn_variant: Literal["gdn1", "gdn2"] = "gdn2"
     olmo_gdn_allow_neg_eigval: bool = True
     olmo_gdn_expand_v: float = 2.0
     # Head dim is int(olmo_gdn_head_dim_multiplier * d_model / n_head)
