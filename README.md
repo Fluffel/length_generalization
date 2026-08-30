@@ -16,5 +16,6 @@ Mamba:
 olmo_core (see https://github.com/allenai/OLMo-core/tree/main)
     git clone https://github.com/allenai/OLMo-core.git
     cd OLMo-core
-    pip install -e .[all]
+    <!-- pip install -e .[all] -->
+    pip install -e ".[fla,transformers]"
 
