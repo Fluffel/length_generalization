@@ -1,0 +1,3 @@
+[submodule "length-generalization-log-analysis"]
+	path = length-generalization-log-analysis
+	url = git@github.com:Fluffel/length-generalization-log-analysis.git
