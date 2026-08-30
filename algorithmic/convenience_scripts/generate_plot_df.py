@@ -12,12 +12,29 @@ This script keeps plot aesthetics and legend naming consistent with
 Groups are built from ``--group-by`` columns and plotted via their max-winner
 datapoints per validation bin (same winner logic as ``generate_plot.py``).
 
+The summary CSV holds one row per run with its validation bins side by side
+(``bin1_range``/``bin1_acc``, …); it is exploded into one row per (run, bin) on
+load, which exposes the run-level columns ``num_bins``, ``bins``,
+``train_range``, ``train_len_min/max`` and ``max_eval_len`` to all filters.
+Runs with differing bin counts or training ranges therefore never get mixed into
+one series, and can be selected with:
+
+* ``--num-bins 3,6``               -> keep runs with these bin counts
+* ``--min-bins`` / ``--max-bins``  -> keep runs within a bin-count range
+* ``--train-range 0-49,0-24``      -> keep runs trained on these length ranges
+* ``--exclude-train-range 0-9``    -> drop runs trained on these ranges
+* ``--bins "0-49|50-99|100-149"``  -> keep runs with exactly this bin layout
+* ``--first-bins 3``               -> plot only each run's first three bins
+* ``--max-bin-len 149``            -> drop bins reaching beyond this length
+
 Multitask grids (``--multitask``) place one task per axis with:
 
 * ``--ncols``        axes per row
 * ``--multititles``  per-axis titles (defaults to task names)
 * ``--plot-size``    per-axis size in inches (``W,H`` / ``WxH``); figure is
                      ``ncols*W`` by ``nrows*H``
+* ``--merge-bins``   merge runs by ordinal bin index, ignoring interval names
+                     (requires ``--x-ticks bins``)
 """
 
 from __future__ import annotations
@@ -29,6 +46,11 @@ from collections import defaultdict
 from pathlib import Path
 
 from plot_utils import (
+    BinFilter,
+    load_summary_dataframe,
+    normalize_bin_signatures,
+    normalize_int_tokens,
+    normalize_range_tokens,
     _bucket_plot_x,
     _bucket_sort_key_plot,
     _bucket_upper_bound,
@@ -42,8 +64,12 @@ from plot_utils import (
     _split_rows_by_bin_signature,
     _x_data_to_plot_shrink,
     legend_label_from_rows,
+    signature_layout_label,
+    max_line_xy_by_bin_index,
     max_line_xy_for_winners,
+    select_max_winners_by_bin_index,
     select_max_winners_for_series,
+    _remap_rows_to_ordinal_bins,
 )
 from dataframe_query_utils import (
     apply_keep_remove_filters,
@@ -104,6 +130,7 @@ def _prepare_task_plot(
     x_tick_step: int,
     x_axis_break: str | None,
     num_bins: int | None,
+    merge_bins: bool,
 ) -> dict:
     """Collapse/filter one task and compute max-series geometry for drawing."""
     df = df.copy()
@@ -118,14 +145,17 @@ def _prepare_task_plot(
     df["accuracy"] = df["accuracy"].astype(float)
 
     if num_bins is not None:
-        cnt = (
-            df.groupby(["model", "learning_rate"])["bucket"]
-            .nunique()
-            .rename("num_bins")
-            .reset_index()
-        )
-        keep_dps = cnt[cnt["num_bins"] == num_bins][["model", "learning_rate"]]
-        df = df.merge(keep_dps, on=["model", "learning_rate"], how="inner")
+        if "num_bins" in df.columns:
+            df = df[df["num_bins"].astype(int) == num_bins]
+        else:
+            cnt = (
+                df.groupby(["model", "learning_rate"])["bucket"]
+                .nunique()
+                .rename("num_bins")
+                .reset_index()
+            )
+            keep_dps = cnt[cnt["num_bins"] == num_bins][["model", "learning_rate"]]
+            df = df.merge(keep_dps, on=["model", "learning_rate"], how="inner")
         if df.empty:
             raise SystemExit(f"No rows left after --num-bins={num_bins} for task={task!r}.")
 
@@ -134,7 +164,11 @@ def _prepare_task_plot(
     # Keep one value per datapoint-bucket: max accuracy.
     # Important: when grouping is active, include group-by columns in the key so
     # runs from different groups (e.g. mkar_vocab_size=32 vs 128) never mix.
-    collapse_keys = ["model", "learning_rate", "bucket", *group_by]
+    # ``bins`` keeps runs of the same model with different bin layouts apart.
+    collapse_keys: list[str] = []
+    for col in ["model", "learning_rate", "bucket", "bins", *group_by]:
+        if col not in collapse_keys and (col != "bins" or "bins" in df.columns):
+            collapse_keys.append(col)
     dfc = (
         df.groupby(collapse_keys, as_index=False)["accuracy"]
         .max()
@@ -144,6 +178,11 @@ def _prepare_task_plot(
     filtered_rows = dfc.to_dict(orient="records")
     if not filtered_rows:
         raise SystemExit(f"No rows to plot after collapse/filtering for task={task!r}.")
+
+    if merge_bins:
+        if x_ticks_mode != "bins":
+            raise SystemExit("--merge-bins requires --x-ticks bins.")
+        filtered_rows = _remap_rows_to_ordinal_bins(filtered_rows)
 
     if x_ticks_mode == "bins" and x_axis_break is not None and str(x_axis_break).strip():
         raise SystemExit("--x-axis-break is incompatible with --x-ticks bins.")
@@ -177,9 +216,13 @@ def _prepare_task_plot(
         sid_to_custom_label = {}
 
     sub_series_rows: dict[tuple[str, frozenset[str]], list[dict]] = {}
+    empty_sig = frozenset()
     for sid, sid_rows in series_id_to_rows.items():
-        for sig, sig_rows in _split_rows_by_bin_signature(sid_rows).items():
-            sub_series_rows[(sid, sig)] = sig_rows
+        if merge_bins:
+            sub_series_rows[(sid, empty_sig)] = sid_rows
+        else:
+            for sig, sig_rows in _split_rows_by_bin_signature(sid_rows).items():
+                sub_series_rows[(sid, sig)] = sig_rows
 
     def sub_key_sort(k: tuple[str, frozenset[str]]) -> tuple:
         sid, sig = k
@@ -203,10 +246,10 @@ def _prepare_task_plot(
             base = _group_label_from_sid(sid, base_labels[sk])
         else:  # custom
             base = sid_to_custom_label.get(sid, base_labels[sk])
-        if sig_count_by_sid[sid] > 1:
-            display_labels[sk] = f"{base} [ends {_signature_label(sig)}]"
-        else:
+        if merge_bins or sig_count_by_sid[sid] <= 1:
             display_labels[sk] = base
+        else:
+            display_labels[sk] = f"{base} [{signature_layout_label(sig)}]"
 
     id_strs = [f"{sid}::{_signature_label(sig)}" for sid, sig in sub_keys]
     deduped = _dedupe_legend_labels(
@@ -276,22 +319,40 @@ def _prepare_task_plot(
         mmean: list[float]
         mstd: list[float]
         if max_aggregation == "pareto_mean":
-            sig = sk[1]
-            ends_for_sig = _signature_x_ends(sig)
-            local_dcv = series_to_dcv.get(sk, {})
-            pruned, _ = select_max_winners_for_series(
-                datapoints,
-                local_dcv,
-                all_ends_override=ends_for_sig or x_tick_ends,
-            )
-            if not pruned:
-                continue
-            mx, mmean, mstd = max_line_xy_for_winners(
-                pruned,
-                ends_for_sig or x_tick_ends,
-                local_dcv,
-                fallback_dps=datapoints,
-            )
+            if merge_bins:
+                buckets_sl = series_buckets(sk)
+                all_bin_indices = list(range(len(buckets_sl)))
+                local_dcv = series_to_dcv.get(sk, {})
+                pruned, _ = select_max_winners_by_bin_index(
+                    datapoints,
+                    local_dcv,
+                    all_bin_indices=all_bin_indices,
+                )
+                if not pruned:
+                    continue
+                mx, mmean, mstd = max_line_xy_by_bin_index(
+                    pruned,
+                    all_bin_indices,
+                    local_dcv,
+                    fallback_dps=datapoints,
+                )
+            else:
+                sig = sk[1]
+                ends_for_sig = _signature_x_ends(sig)
+                local_dcv = series_to_dcv.get(sk, {})
+                pruned, _ = select_max_winners_for_series(
+                    datapoints,
+                    local_dcv,
+                    all_ends_override=ends_for_sig or x_tick_ends,
+                )
+                if not pruned:
+                    continue
+                mx, mmean, mstd = max_line_xy_for_winners(
+                    pruned,
+                    ends_for_sig or x_tick_ends,
+                    local_dcv,
+                    fallback_dps=datapoints,
+                )
         else:  # bin_max
             buckets_sl = series_buckets(sk)
             if not buckets_sl:
@@ -470,6 +531,7 @@ def plot_tasks_df(
     x_tick_step: int,
     x_axis_break: str | None,
     num_bins: int | None,
+    merge_bins: bool,
     ncols: int,
     plot_size: tuple[float, float],
 ) -> None:
@@ -504,6 +566,7 @@ def plot_tasks_df(
             x_tick_step=x_tick_step,
             x_axis_break=x_axis_break,
             num_bins=num_bins,
+            merge_bins=merge_bins,
         )
         for task in tasks
     ]
@@ -552,6 +615,7 @@ def plot_task_df(
     x_tick_step: int,
     x_axis_break: str | None,
     num_bins: int | None,
+    merge_bins: bool,
     plot_size: tuple[float, float] | None = None,
 ) -> None:
     """Single-task wrapper around ``plot_tasks_df`` (default size 12x7)."""
@@ -570,13 +634,24 @@ def plot_task_df(
         x_tick_step=x_tick_step,
         x_axis_break=x_axis_break,
         num_bins=num_bins,
+        merge_bins=merge_bins,
         ncols=1,
         plot_size=size,
     )
 
 
 def _dump_selected_rows(df, *, group_by: list[str], selected_cols: list[str]) -> None:
-    cols = selected_cols or ["task", *group_by, "model", "learning_rate", "bucket", "accuracy"]
+    default_cols = [
+        "task",
+        *group_by,
+        "model",
+        "learning_rate",
+        "num_bins",
+        "train_range",
+        "bucket",
+        "accuracy",
+    ]
+    cols = selected_cols or [c for c in default_cols if c in df.columns]
     require_columns(df, cols, "--selected-cols")
     out_df = df[cols].drop_duplicates()
     sort_cols = [c for c in ("task", "bucket", "model", "learning_rate", "accuracy") if c in cols]
@@ -587,11 +662,6 @@ def _dump_selected_rows(df, *, group_by: list[str], selected_cols: list[str]) ->
 
 
 def main() -> int:
-    try:
-        import pandas as pd
-    except ModuleNotFoundError as e:
-        raise SystemExit("This script requires pandas. Install it first.") from e
-
     parser = argparse.ArgumentParser(
         description=(
             "Create plots from CSV via pandas DataFrame filtering. "
@@ -753,7 +823,74 @@ def main() -> int:
             "Aliases: mean->pareto_mean, max->bin_max."
         ),
     )
-    parser.add_argument("--num-bins", type=int, default=None, metavar="N")
+    parser.add_argument(
+        "--num-bins",
+        action="append",
+        default=[],
+        metavar="N",
+        help=(
+            "Only plot runs with exactly N validation bins. Repeatable / "
+            "comma-separated to allow several counts, e.g. --num-bins 3,6."
+        ),
+    )
+    parser.add_argument(
+        "--min-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only plot runs with at least N validation bins.",
+    )
+    parser.add_argument(
+        "--max-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only plot runs with at most N validation bins.",
+    )
+    parser.add_argument(
+        "--train-range",
+        action="append",
+        default=[],
+        metavar="LO-HI",
+        help=(
+            "Only plot runs whose training bin (first bin) is one of these ranges, "
+            "e.g. --train-range 0-49,0-24 (repeatable)."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-train-range",
+        action="append",
+        default=[],
+        metavar="LO-HI",
+        help="Drop runs whose training bin is one of these ranges (repeatable).",
+    )
+    parser.add_argument(
+        "--bins",
+        action="append",
+        default=[],
+        metavar="LO-HI|LO-HI|...",
+        help=(
+            "Only plot runs with exactly this bin layout, e.g. "
+            '--bins "0-49|50-99|100-149" (repeat the flag to allow several layouts).'
+        ),
+    )
+    parser.add_argument(
+        "--first-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Plot only the first N bins of each run, dropping longer ones. Useful "
+            "for comparing runs whose bin counts differ."
+        ),
+    )
+    parser.add_argument(
+        "--max-bin-len",
+        type=int,
+        default=None,
+        metavar="LEN",
+        help="Drop bins whose upper bound exceeds LEN (e.g. 149).",
+    )
     parser.add_argument(
         "--x-ticks",
         dest="x_ticks_mode",
@@ -762,12 +899,30 @@ def main() -> int:
     )
     parser.add_argument("--x-tick-step", type=int, default=10)
     parser.add_argument("--x-axis-break", type=str, default=None, metavar="POS")
+    parser.add_argument(
+        "--merge-bins",
+        action="store_true",
+        help=(
+            "Merge datapoints by ordinal validation bin (bin0, bin1, ...) instead of "
+            "splitting series when bucket interval names differ. Requires --x-ticks bins."
+        ),
+    )
     args = parser.parse_args()
 
     if args.x_tick_step < 1:
         raise SystemExit("--x-tick-step must be >= 1.")
-    if args.num_bins is not None and args.num_bins < 1:
-        raise SystemExit("--num-bins must be >= 1.")
+    if args.min_bins is not None and args.min_bins < 1:
+        raise SystemExit("--min-bins must be >= 1.")
+    if args.max_bins is not None and args.max_bins < 1:
+        raise SystemExit("--max-bins must be >= 1.")
+    if (
+        args.min_bins is not None
+        and args.max_bins is not None
+        and args.min_bins > args.max_bins
+    ):
+        raise SystemExit("--min-bins must not exceed --max-bins.")
+    if args.first_bins is not None and args.first_bins < 1:
+        raise SystemExit("--first-bins must be >= 1.")
     if args.ncols < 1:
         raise SystemExit("--ncols must be >= 1.")
     custom_labels = _parse_custom_group_labels(args.group_custom_labels)
@@ -810,14 +965,27 @@ def main() -> int:
         size = plot_size if plot_size is not None else (12.0, 7.0)
         default_name = f"{args.task}_csv_df.png"
 
-    df = pd.read_csv(args.input_csv)
-    if df.empty:
-        raise SystemExit(f"No CSV rows found at {args.input_csv}.")
+    bin_filter = BinFilter(
+        bin_counts=normalize_int_tokens(args.num_bins, "--num-bins"),
+        min_bins=args.min_bins,
+        max_bins=args.max_bins,
+        train_ranges=normalize_range_tokens(args.train_range, "--train-range"),
+        exclude_train_ranges=normalize_range_tokens(
+            args.exclude_train_range, "--exclude-train-range"
+        ),
+        bin_signatures=normalize_bin_signatures(args.bins, "--bins"),
+        first_bins=args.first_bins,
+        max_bin_upper=args.max_bin_len,
+    )
 
+    df = load_summary_dataframe(args.input_csv)
     df = apply_keep_remove_filters(df, args.keep, args.remove)
     df = apply_query_filters(df, args.query, args.exclude_query)
     if df.empty:
         raise SystemExit("No rows left after DataFrame filtering.")
+    df = bin_filter.apply(df)
+    if df.empty:
+        raise SystemExit(f"No runs left after bin filtering ({bin_filter.describe()}).")
     if args.dump_selected or args.dump_selected_only:
         _dump_selected_rows(df, group_by=args.group_by, selected_cols=args.selected_cols)
         if args.dump_selected_only:
@@ -837,7 +1005,8 @@ def main() -> int:
         x_ticks_mode=args.x_ticks_mode,
         x_tick_step=args.x_tick_step,
         x_axis_break=args.x_axis_break,
-        num_bins=args.num_bins,
+        num_bins=None,  # already applied via BinFilter on the whole frame
+        merge_bins=args.merge_bins,
         ncols=args.ncols if multitask else 1,
         plot_size=size,
     )

@@ -11,14 +11,10 @@ from dataframe_query_utils import (
     apply_query_filters,
     require_columns,
 )
+from plot_utils import load_summary_dataframe
 
 
 def main() -> int:
-    try:
-        import pandas as pd
-    except ModuleNotFoundError as e:
-        raise SystemExit("This script requires pandas. Install it first.") from e
-
     parser = argparse.ArgumentParser(
         description=(
             "Query summary CSV with DataFrame filters. "
@@ -73,17 +69,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input_csv)
-    if df.empty:
-        raise SystemExit(f"No rows found in {args.input_csv}.")
-
+    df = load_summary_dataframe(args.input_csv)
     df = apply_keep_remove_filters(df, args.keep, args.remove)
     df = apply_query_filters(df, args.query, args.exclude_query)
     if df.empty:
         raise SystemExit("No rows left after DataFrame filtering.")
 
     # default_datapoint_cols = ["task", *TASK_PARAM_COLUMNS, "model", "learning_rate", "bucket", "accuracy"]
-    default_datapoint_cols = ["task", "model", "bucket", "accuracy"]
+    default_datapoint_cols = ["task", "model", "num_bins", "train_range", "bucket", "accuracy"]
     datapoint_cols = args.datapoint_cols or [c for c in default_datapoint_cols if c in df.columns]
     require_columns(df, datapoint_cols, "--datapoint-cols")
     require_columns(df, args.show_cols, "--show-cols")
