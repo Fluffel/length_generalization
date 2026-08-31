@@ -6,6 +6,7 @@ import math
 import os
 import random
 import sys
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -187,7 +188,60 @@ def _perfect_train_acc(acc: Optional[float]) -> bool:
     return acc is not None and float(acc) >= 0.9999
 
 
+@dataclass
+class _EvalSnapshot:
+    """One complete eval (all length bins) kept on the per-bin best list."""
+
+    accs: dict[str, float]
+    epoch: float
+    global_step: int
+
+
+def update_bin_best_snapshots(
+    best: list[_EvalSnapshot],
+    new: _EvalSnapshot,
+    keys: list[str],
+) -> list[_EvalSnapshot]:
+    """Keep eval snapshots that are maximal in at least one length bin.
+
+    - If ``new`` is at least as good as the running max in every bin and strictly
+      better in at least one, it replaces the whole list.
+    - If it is strictly better in some bins but not all, it is appended and
+      any snapshot that is no longer maximal in any bin is dropped.
+    - If it is not strictly better in any bin, the list is unchanged.
+    """
+    if not best:
+        return [new]
+    maxima = {k: max(s.accs[k] for s in best) for k in keys}
+    better = [k for k in keys if new.accs[k] > maxima[k]]
+    if not better:
+        return best
+    at_least = [k for k in keys if new.accs[k] >= maxima[k]]
+    if len(at_least) == len(keys):
+        return [new]
+    combined = best + [new]
+    new_maxima = {k: max(s.accs[k] for s in combined) for k in keys}
+    return [s for s in combined if any(s.accs[k] == new_maxima[k] for k in keys)]
+
+
+def _all_bins_at_least(accs: dict[str, float], keys: list[str], threshold: float) -> bool:
+    return all(float(accs.get(k, 0.0) or 0.0) >= threshold for k in keys)
+
+
 class AlgorithmicTrainCallback(TrainerCallback):
+    """Tracks per-bin best evals and writes them as summary lines when training ends.
+
+    HuggingFace ``Trainer.evaluate()`` calls ``on_evaluate`` once per length bin, so
+    accuracies are accumulated in ``latest_acc`` until a full eval is in. Each complete
+    eval updates a list of snapshots that are maximal in at least one bin (see
+    ``update_bin_best_snapshots``). Training curves still go to W&B every eval; the
+    summary file is written in ``on_train_end``, one line per kept snapshot.
+
+    Training also stops (without requiring ``--early-stop``) as soon as every bin
+    reaches ``run_config.solved_acc_threshold``. ``--early-stop`` still stops when
+    the train-length bin is ~perfect, even if the OOD bins are not.
+    """
+
     def __init__(
         self,
         run_config: RunConfig,
@@ -212,13 +266,16 @@ class AlgorithmicTrainCallback(TrainerCallback):
         self.current_epoch: float = 0.0
         self.use_wandb = use_wandb
         self.early_stop = run_config.early_stop
+        self.solved_acc_threshold = run_config.solved_acc_threshold
         self.metric_prefix = metric_prefix
         # Eval metrics use length bins from ``test_ranges`` (e.g. eval_len0-49_acc), not train_length_range
         # (which can differ by one from the first bin). Wrong keys → no early stop / no train/acc in W&B.
         self._eval_acc_keys: list[str] = [f"eval_len{a}-{b}_acc" for a, b in test_ranges]
         self._train_bin_key: str = self._eval_acc_keys[0]
         self._mid_bin_key: str = self._eval_acc_keys[1] if len(self._eval_acc_keys) > 1 else self._train_bin_key
-        self._logged_epoch_summary: bool = False
+        self._best_snapshots: list[_EvalSnapshot] = []
+        self._stopped_early: bool = False
+        self._summary_written: bool = False
 
     def _metric_name(self, key: str) -> str:
         if not self.metric_prefix:
@@ -230,6 +287,32 @@ class AlgorithmicTrainCallback(TrainerCallback):
             return
         full: dict[str, Any] = {f"{self.metric_prefix}/trainer_step": trainer_step, **payload}
         wandb.log(full)
+
+    def _write_summary_line(self, accs: dict[str, float], msg: str) -> None:
+        train_show = float(accs.get(self._train_bin_key, 0) or 0)
+        if train_show >= 0.99:
+            msg = ">> " + msg
+        line = "\t".join(
+            [
+                self.log_prefix,
+                msg,
+                "\t\t".join(f"{k}: {accs[k]}" for k in self._eval_acc_keys if k in accs),
+                f"\tlr: {self.arch.lr}",
+            ]
+        )
+        print(line, file=self.summary_file)
+        self.summary_file.flush()
+
+    def _write_best_results(self) -> None:
+        if self._summary_written:
+            return
+        self._summary_written = True
+        for snap in self._best_snapshots:
+            if self._stopped_early:
+                msg = f"early stop {snap.epoch}\t\t"
+            else:
+                msg = "reach max step\t\t"
+            self._write_summary_line(snap.accs, msg)
 
     def on_evaluate(self, args, state, control, metrics=None, logs=None, eval_dataloader=None, **kwargs):
         metrics = metrics or {}
@@ -248,46 +331,33 @@ class AlgorithmicTrainCallback(TrainerCallback):
             wandb_eval[self._metric_name("train/acc")] = self.latest_acc[self._train_bin_key]
         if wandb_eval:
             self._log_to_wandb(wandb_eval, state.global_step)
-        if len(self.latest_acc) == len(self.test_length_ranges):
-            solved_train = False
-            if self.early_stop:
-                solved_train = _perfect_train_acc(self.latest_acc.get(self._train_bin_key))
-            epoch_done_one = self.current_epoch >= 1.0 and not self._logged_epoch_summary
-            if solved_train:
-                control.should_training_stop = True
-                self.stop_state["fit_train_data"] = True
-                msg = f"early stop {self.current_epoch}\t\t"
-                train_show = float(self.latest_acc.get(self._train_bin_key, 0) or 0)
-                if train_show >= 0.99:
-                    msg = ">> " + msg
-                line = "\t".join(
-                    [
-                        self.log_prefix,
-                        msg,
-                        "\t\t".join(f"{k}: {v}" for k, v in self.latest_acc.items()),
-                        f"\tlr: {self.arch.lr}",
-                    ]
-                )
-                print(line, file=self.summary_file)
-                self.summary_file.flush()
-                if _perfect_train_acc(self.latest_acc.get(self._mid_bin_key)):
-                    self.stop_state["should_stop"] = True
-            elif epoch_done_one:
-                self._logged_epoch_summary = True
-                msg = "reach max step\t\t"
-                train_show = float(self.latest_acc.get(self._train_bin_key, 0) or 0)
-                if train_show >= 0.99:
-                    msg = ">> " + msg
-                line = "\t".join(
-                    [
-                        self.log_prefix,
-                        msg,
-                        "\t\t".join(f"{k}: {v}" for k, v in self.latest_acc.items()),
-                        f"\tlr: {self.arch.lr}",
-                    ]
-                )
-                print(line, file=self.summary_file)
-                self.summary_file.flush()
+        if len(self.latest_acc) != len(self.test_length_ranges):
+            return
+
+        snapshot = _EvalSnapshot(
+            accs=dict(self.latest_acc),
+            epoch=self.current_epoch,
+            global_step=state.global_step,
+        )
+        self._best_snapshots = update_bin_best_snapshots(
+            self._best_snapshots, snapshot, self._eval_acc_keys
+        )
+
+        solved_all_bins = _all_bins_at_least(
+            snapshot.accs, self._eval_acc_keys, self.solved_acc_threshold
+        )
+        solved_train = self.early_stop and _perfect_train_acc(snapshot.accs.get(self._train_bin_key))
+        if not (solved_all_bins or solved_train):
+            return
+
+        control.should_training_stop = True
+        self._stopped_early = True
+        self.stop_state["fit_train_data"] = True
+        if solved_all_bins or _perfect_train_acc(snapshot.accs.get(self._mid_bin_key)):
+            self.stop_state["should_stop"] = True
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._write_best_results()
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         logs = logs or {}
@@ -525,8 +595,7 @@ class CurriculumTrainCallback(TrainerCallback):
             
         step_cap_reached = (state.global_step - self.stage_start_step) >= self.curriculum.steps_per_stage
         if not (solved or step_cap_reached):
-            # Stage still in progress: don't log or advance yet, just keep training
-            # (mirrors AlgorithmicTrainCallback, which only logs on early-stop/epoch-done).
+            # Stage still in progress: don't log or advance yet, just keep training.
             self.latest_acc = {}
             return
 
@@ -623,6 +692,7 @@ def _init_wandb_run_for_seed(run_config: RunConfig, seed: int) -> None:
         "eval_steps": run_config.eval_steps,
         "logging_steps": run_config.logging_steps,
         "num_seeds": run_config.seeds,
+        "solved_acc_threshold": run_config.solved_acc_threshold,
     }
     wandb.init(project=project, entity=entity, group=group, name=run_name, config=config, reinit=True)
 
@@ -882,6 +952,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-group", type=str, default=None)
     parser.add_argument("--logging-steps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
+    parser.add_argument("--solved-acc-threshold", type=float, default=None)
     args = parser.parse_args()
     presets = {
         "transformer": default_transformer_sweep,
@@ -897,4 +968,6 @@ if __name__ == "__main__":
         rc.logging_steps = args.logging_steps
     if args.eval_steps is not None:
         rc.eval_steps = args.eval_steps
+    if args.solved_acc_threshold is not None:
+        rc.solved_acc_threshold = args.solved_acc_threshold
     main(rc)

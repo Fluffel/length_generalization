@@ -247,6 +247,10 @@ class RunConfig:
     optim: str = "adamw_torch"
     lr_scheduler_type: str = "linear"
     early_stop = True
+    # Stop as soon as every eval length bin reaches this accuracy, even without
+    # ``early_stop``. Set above 1.0 to disable. ``early_stop`` still separately
+    # stops when the train-length bin is ~perfect.
+    solved_acc_threshold: float = 0.98
 
     log_dir: str = "./logs"
     summary_basename: str = "summary.txt"

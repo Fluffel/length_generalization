@@ -124,6 +124,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--early-stop", action="store_true")
+    parser.add_argument(
+        "--solved-acc-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Stop training when every eval length bin reaches this accuracy "
+            "(default: 0.98). Independent of --early-stop. Set above 1.0 to disable."
+        ),
+    )
 
     parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--report-to", type=str, default="wandb", choices=["none", "wandb"])
@@ -170,6 +179,8 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.train_length_range = args.train_length_range
     rc.formal_aligned_targets = not args.formal_packed_targets
     rc.early_stop = args.early_stop
+    if args.solved_acc_threshold is not None:
+        rc.solved_acc_threshold = args.solved_acc_threshold
 
     curriculum_args = {
         "--curriculum-num-steps": args.curriculum_num_steps,
