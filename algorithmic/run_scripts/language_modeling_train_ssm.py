@@ -16,9 +16,9 @@ def build_architectures(_args) -> list[ArchSlot]:
     return [
         ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr, between_block_mlp_layers=1)
         for l in [1, 2, 4]
-        for d in [16, 64]
+        for d in [8, 16]
         for dr in [0, 0.1]
-        for lr in [1e-3, 3e-4]
+        for lr in [1e-3, 1e-4]
     ]
 
 
