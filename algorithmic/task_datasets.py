@@ -906,6 +906,7 @@ class Tomita2Language(Tomita1Language):
     def __init__(self, p: float, q: float):
         super().__init__(p, q)
         self.q0 = "q0"
+        self.dead_states = {"q2"}
         self.dfa = DFA(self.sigma, ["q0", "q1", "q2"], self.transition_function, self.q0, {"q0"})
 
     def transition_function(self, q, s):
@@ -924,6 +925,7 @@ class Tomita3Language(Tomita1Language):
     def __init__(self, p: float, q: float):
         super().__init__(p, q)
         self.q0 = "q0"
+        self.dead_states = {"q3", "q4"}
         self.dfa = DFA(self.sigma, ["q0", "q1", "q2", "q3", "q4"], self.transition_function, self.q0, {"q0", "q1", "q2"})
 
     def transition_function(self, q, s):
@@ -967,6 +969,7 @@ class Tomita4Language(Tomita3Language):
     def __init__(self, p: float, q: float):
         super().__init__(p, q)
         self.q0 = "q0"
+        self.dead_states = {"q3"}
         self.dfa = DFA(self.sigma, ["q0", "q1", "q2", "q3"], self.transition_function, self.q0, {"q0", "q1", "q2"})
 
     def transition_function(self, q, s):
@@ -1010,6 +1013,7 @@ class Tomita7Language(Tomita3Language):
         super(Tomita3Language, self).__init__(p, q)
         self.sigma = ["0", "1"]
         self.q0 = "q0"
+        self.dead_states = {"q4"}
         self.dfa = DFA(self.sigma, ["q0", "q1", "q2", "q3", "q4"], self.transition_function, self.q0, {"q0", "q1", "q2", "q3"})
 
     def transition_function(self, q, s):
@@ -1355,25 +1359,71 @@ class NonStarFreeCorpus:
 
 
 class FormalLanguageDataset(CustomDataset):
+    """A formal-language transduction corpus encoded for causal-LM training.
+
+    Both serializations below rely on the autoregressive shift applied by
+    `ForCausalLMLoss` and `compute_metrics`, i.e. the logits at position `t` are
+    scored against `label[t + 1]`.
+
+    `aligned=True` (the default) matches formal_lang_suite: source and target hold
+    one token each per string position, and the model emits target token `t` as soon
+    as it has consumed source token `t`:
+
+        input_ids: <bos>   a     a    a    a   <eos>
+        label:     <pad> <pad>   0    1    0     1
+                            ^ logits after "<bos> a" are scored against target[0]
+
+    The trailing `<eos>` is never scored -- the shift drops its logits -- and exists
+    only so the last target token has a position to occupy.
+
+    `aligned=False` is the legacy prompt/answer packing shared with the algorithmic
+    tasks, where the whole target follows the source behind a separator:
+
+        input_ids: <bos> a a a a <sep>  0    1    0    1  <eos>
+        label:     <pad> ...    <pad>   0    1    0    1  <eos>
+
+    That form asks for strictly more than the language does: the model must also
+    retain the source length and count it back down to place `<eos>`, an unbounded
+    counter rather than the finite state the language needs. Fixed-state recurrent
+    models fit it in-distribution and then fail to extrapolate, so prefer `aligned`
+    unless you are deliberately reproducing the old behaviour.
+    """
+
     def __init__(
         self,
         source: list[str],
-        target: list[str],
+        target: list[str] | list[list[str]],
         tokenizer: customTokenizer,
         n_positions: int,
         add_positional_offset: bool = True,
+        aligned: bool = True,
     ):
         super().__init__(n_positions, add_positional_offset)
         self.source = source
         self.target = target
         self.tokenizer = tokenizer
+        self.aligned = aligned
+        if aligned:
+            mismatch = next(((s, t) for s, t in zip(source, target) if len(s) != len(t)), None)
+            if mismatch is not None:
+                raise ValueError(
+                    "aligned serialization needs one target token per source token, got lengths "
+                    f"{len(mismatch[0])} and {len(mismatch[1])}; languages that label each position "
+                    "with several characters must have their targets grouped into per-position "
+                    "tokens first (see dataset_generators._chunk_targets)"
+                )
 
-    def _encode_pair(self, src: str, tgt: str):
-        src_ids = [self.tokenizer.vocab[ch] for ch in src]
-        tgt_ids = [self.tokenizer.vocab[ch] for ch in tgt]
-        instance = [self.tokenizer.bos_token_id] + src_ids + [self.tokenizer.sep_token_id] + tgt_ids + [self.tokenizer.eos_token_id]
-        label = deepcopy(instance)
-        label[: len(src_ids) + 2] = [self.tokenizer.pad_token_id] * (len(src_ids) + 2)
+    def _encode_pair(self, src, tgt):
+        src_ids = [self.tokenizer.vocab[token] for token in src]
+        tgt_ids = [self.tokenizer.vocab[token] for token in tgt]
+        pad_id = self.tokenizer.pad_token_id
+        if self.aligned:
+            instance = [self.tokenizer.bos_token_id] + src_ids + [self.tokenizer.eos_token_id]
+            label = [pad_id, pad_id] + tgt_ids
+        else:
+            instance = [self.tokenizer.bos_token_id] + src_ids + [self.tokenizer.sep_token_id] + tgt_ids + [self.tokenizer.eos_token_id]
+            label = deepcopy(instance)
+            label[: len(src_ids) + 2] = [pad_id] * (len(src_ids) + 2)
         pos_ids = self.get_pos_ids(len(instance), self.n_positions - len(instance))
         return instance, pos_ids, label
 
@@ -1384,16 +1434,28 @@ class FormalLanguageDataset(CustomDataset):
 
 
 class EvalDataset(Dataset):
+    """A fixed number of examples drawn eagerly from a streaming dataset."""
+
     def __init__(self, d: IterableDataset, num_data: int) -> None:
         super().__init__()
+        self.source_dataset = d
         self.data = []
         for i, item in enumerate(d):
             if i >= num_data:
                 break
             self.data.append(item)
 
+    @property
+    def tokenizer(self) -> customTokenizer:
+        """The tokenizer that encoded these examples, so they can be decoded again."""
+        return self.source_dataset.tokenizer
+
+    @property
+    def n_positions(self) -> int:
+        return self.source_dataset.n_positions
+
     def __getitem__(self, index):
         return self.data[index]
-    
+
     def __len__(self):
         return len(self.data)

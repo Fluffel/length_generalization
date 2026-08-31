@@ -69,8 +69,27 @@ _NONSTARFREE_LANG_MAP = {
 }
 _STARFREE_POST_LANG_TASKS = {"ab_star_d_bc_star", "012_star_0_2_star"}
 
+# Every task `_make_task_dataset` can construct, in the order it matches them.
+# Kept next to that function so the two cannot drift apart (enforced by
+# algorithmic/tests/test_task_registry.py) and exported so CLIs can offer it as
+# `--task` choices instead of re-listing the tasks themselves.
+ALGORITHMIC_TASKS: tuple[str, ...] = (
+    "bin_majority",
+    "majority",
+    "bin_majority_interleave",
+    "unique_copy",
+    "repeat_copy",
+    "sort",
+    "parity",
+    "addition",
+    "mqar",
+    "flipflop",
+    "selective_copy",
+    "mkar",
+)
 
-def _is_formal_task(task: str) -> bool:
+
+def is_formal_task(task: str) -> bool:
     return (
         task.startswith("tomita_")
         or task.startswith("d_")
@@ -144,9 +163,19 @@ def _make_task_dataset(
             raise ValueError(f"Unknown task {task!r}")
 
 
-def build_datasets(run_config: RunConfig):
-    if _is_formal_task(run_config.task):
-        return _build_formal_datasets(run_config)
+def build_datasets(run_config: RunConfig, corpus_size_limit: int | None = None):
+    """Build the train dataset and the dict of per-length-bin eval datasets.
+
+    Args:
+        corpus_size_limit: cap on the number of examples generated per split. Only
+            affects formal-language tasks, whose corpora are pre-generated up front
+            (the algorithmic tasks stream indefinitely, and their eval bins are sized
+            by ``run_config.test_num``). Leave at ``None`` for training; inspection
+            tools set it to avoid spending minutes generating a full corpus -- e.g.
+            `tomita_6` -- just to look at a handful of examples.
+    """
+    if is_formal_task(run_config.task):
+        return _build_formal_datasets(run_config, corpus_size_limit=corpus_size_limit)
 
     train_length_range = run_config.train_length_range
     test_length_ranges = run_config.test_length_ranges
@@ -185,7 +214,7 @@ def build_curriculum_datasets(run_config: RunConfig):
     """
     curriculum = run_config.curriculum
     assert curriculum is not None, "build_curriculum_datasets requires run_config.curriculum to be set"
-    assert not _is_formal_task(run_config.task), (
+    assert not is_formal_task(run_config.task), (
         f"curriculum learning is not supported for formal-language task {run_config.task!r}"
     )
 
@@ -249,6 +278,13 @@ _FORMAL_TASK_SPECS: dict[str, _FormalTaskSpec] = {
     "012_star_0_2_star": _FormalTaskSpec(2, 50, 50, 3, 10000, 2000),
 }
 
+# `is_formal_task` also accepts un-tabulated `tomita_*`/`d_*` names (which then fall
+# back to RunConfig's generic length windows), so the enumerable set is the tabulated
+# ones plus `an_star_a2`, the one formal task deliberately left out of the table.
+FORMAL_TASKS: tuple[str, ...] = tuple(_FORMAL_TASK_SPECS) + ("an_star_a2",)
+
+ALL_TASKS: tuple[str, ...] = ALGORITHMIC_TASKS + FORMAL_TASKS
+
 
 def _formal_task_length_ranges(spec: _FormalTaskSpec) -> tuple[tuple[int, int], list[tuple[int, int]]]:
     """bin0 = in-distribution (train) window; later bins grow by `len_incr` each,
@@ -267,20 +303,68 @@ def _formal_task_length_ranges(spec: _FormalTaskSpec) -> tuple[tuple[int, int], 
     return train_range, bins
 
 
-def _make_tokenizer_and_n_positions(train_source, train_target, test_bins):
-    all_src = list(train_source)
-    all_tgt = list(train_target)
-    for bin_corpus in test_bins:
-        all_src.extend(bin_corpus.source)
-        all_tgt.extend(bin_corpus.target)
+def _infer_target_chunk_size(corpora) -> int:
+    """How many target characters each source position is labelled with.
 
-    vocab = sorted(set("".join(all_src) + "".join(all_tgt)))
-    tokenizer = customTokenizer(vocab)
-    n_positions = max(1 + len(s) + 1 + len(t) + 1 for s, t in zip(all_src, all_tgt))
-    return tokenizer, n_positions
+    What a position's label means varies by language: prefix membership for `aa_star`
+    and `abab_star` (1 char), the set of symbols that may legally follow written as one
+    char per alphabet symbol for Tomita 1-4/7 (2) and `ab_star_d_bc_star` (4), and the
+    DFA state reached so far for D_n (2). This mirrors `chunk_size` in
+    formal_lang_suite's dataset yamls, but is derived from the corpora rather than
+    tabulated so it cannot drift out of sync with the generators.
+    """
+    widths = set()
+    for corpus in corpora:
+        for src, tgt in zip(corpus.source, corpus.target):
+            if not src:
+                continue
+            if len(tgt) % len(src) != 0:
+                raise ValueError(
+                    f"target of length {len(tgt)} does not label a source of length {len(src)} "
+                    "an equal number of characters per position"
+                )
+            widths.add(len(tgt) // len(src))
+    if len(widths) != 1:
+        raise ValueError(f"corpora disagree on target characters per position: {sorted(widths)}")
+    return widths.pop()
 
 
-def _build_formal_datasets(run_config: RunConfig):
+def _chunk_targets(targets, chunk_size: int) -> list[list[str]]:
+    """Group each target into one token per source position.
+
+    Multi-character chunks (e.g. `"10"`) become vocabulary entries in their own
+    right, which keeps `FormalLanguageDataset`'s per-token lookup unchanged and
+    keeps decoded sequences readable in the summary logs.
+    """
+    return [
+        [tgt[i : i + chunk_size] for i in range(0, len(tgt), chunk_size)]
+        for tgt in targets
+    ]
+
+
+def _serialized_length(src, tgt, aligned: bool) -> int:
+    if aligned:
+        return 1 + len(src) + 1  # <bos> src <eos>
+    return 1 + len(src) + 1 + len(tgt) + 1  # <bos> src <sep> tgt <eos>
+
+
+def _make_tokenizer_and_n_positions(sources_per_split, targets_per_split, aligned: bool):
+    """Tokenizer and position budget shared by the train split and every eval bin.
+
+    Sharing both means an OOD bin can never introduce a token (or, for multi-character
+    targets, a chunk) the embedding has not seen, nor overflow the position embedding.
+    """
+    tokens: set[str] = set()
+    n_positions = 0
+    for sources, targets in zip(sources_per_split, targets_per_split):
+        for src, tgt in zip(sources, targets):
+            tokens.update(src)
+            tokens.update(tgt)
+            n_positions = max(n_positions, _serialized_length(src, tgt, aligned))
+    return customTokenizer(sorted(tokens)), n_positions
+
+
+def _build_formal_datasets(run_config: RunConfig, corpus_size_limit: int | None = None):
     task = run_config.task
     spec = _FORMAL_TASK_SPECS.get(task)
     if spec is not None:
@@ -292,6 +376,9 @@ def _build_formal_datasets(run_config: RunConfig):
         test_length_ranges = run_config.test_length_ranges
         test_num = run_config.test_num
         train_num = max(4 * test_num, 1000)
+    if corpus_size_limit is not None:
+        train_num = min(train_num, corpus_size_limit)
+        test_num = min(test_num, corpus_size_limit)
     lower_window, upper_window = train_length_range
 
     if task.startswith("tomita_"):
@@ -318,17 +405,35 @@ def _build_formal_datasets(run_config: RunConfig):
     else:
         raise ValueError(f"Unknown formal task {task!r}")
 
+    aligned = run_config.formal_aligned_targets
+    if aligned:
+        chunk_size = _infer_target_chunk_size([train_corpus, *test_bins])
+        train_target = _chunk_targets(train_corpus.target, chunk_size)
+        test_targets = [_chunk_targets(bin_corpus.target, chunk_size) for bin_corpus in test_bins]
+    else:
+        train_target = list(train_corpus.target)
+        test_targets = [list(bin_corpus.target) for bin_corpus in test_bins]
+
     tokenizer, n_positions = _make_tokenizer_and_n_positions(
-        train_corpus.source,
-        train_corpus.target,
-        test_bins,
+        [train_corpus.source, *(bin_corpus.source for bin_corpus in test_bins)],
+        [train_target, *test_targets],
+        aligned,
     )
-    train_dataset = FormalLanguageDataset(train_corpus.source, train_corpus.target, tokenizer, n_positions)
+    train_dataset = FormalLanguageDataset(
+        train_corpus.source, train_target, tokenizer, n_positions, aligned=aligned
+    )
     test_dataset = {
         f"len{r[0]}-{r[1]}": EvalDataset(
-            FormalLanguageDataset(bin_corpus.source, bin_corpus.target, tokenizer, n_positions, add_positional_offset=False),
+            FormalLanguageDataset(
+                bin_corpus.source,
+                bin_target,
+                tokenizer,
+                n_positions,
+                add_positional_offset=False,
+                aligned=aligned,
+            ),
             min(test_num, len(bin_corpus.source)),
         )
-        for r, bin_corpus in zip(test_length_ranges, test_bins)
+        for r, bin_corpus, bin_target in zip(test_length_ranges, test_bins, test_targets)
     }
     return train_dataset, test_dataset, train_length_range, test_length_ranges

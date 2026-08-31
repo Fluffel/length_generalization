@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
 
-from dataset_generators import build_curriculum_datasets, build_datasets
+from dataset_generators import build_curriculum_datasets, build_datasets, is_formal_task
 from models import build_model, hybrid_group_parameters
 from utils import (
     ArchSlot,
@@ -160,6 +160,11 @@ def format_log_prefix(
             # e.g. "frza0.5" (freeze attention for the first 50% of steps) or "frzssm0.8".
             abbrev = "a" if run_config.freeze_arch == "attention" else run_config.freeze_arch
             parts.append(f"frz{abbrev}{run_config.freeze_fraction:g}")
+    if is_formal_task(run_config.task) and not run_config.formal_aligned_targets:
+        # Only the non-default serialization is marked, so aligned runs keep the log
+        # names the plotting scripts already expect while the two cannot be conflated.
+        parts.append("packedtgt")
+
     parts += [f"stp{step_k:.3g}k",
             f"{arch.lr}lr",
     ]

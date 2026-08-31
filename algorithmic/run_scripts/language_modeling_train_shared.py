@@ -14,42 +14,11 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dataset_generators import ALL_TASKS
 from language_modeling_train import main
 from utils import ArchSlot, CurriculumConfig, RunConfig
 
-TASK_CHOICES = [
-    # Algorithmic tasks (dataset_generators._make_task_dataset)
-    "bin_majority",
-    "majority",
-    "bin_majority_interleave",
-    "unique_copy",
-    "repeat_copy",
-    "sort",
-    "parity",
-    "addition",
-    "mqar",
-    "flipflop",
-    "selective_copy",
-    "mkar",
-    # Formal-language tasks (dataset_generators._build_formal_datasets)
-    "tomita_1",
-    "tomita_2",
-    "tomita_3",
-    "tomita_4",
-    "tomita_5",
-    "tomita_6",
-    "tomita_7",
-    "d_2",
-    "d_3",
-    "d_4",
-    "d_12",
-    "abab_star",
-    "aa_star",
-    "an_star_a2",
-    "aa_star_bb_star",
-    "ab_star_d_bc_star",
-    "012_star_0_2_star",
-]
+TASK_CHOICES = list(ALL_TASKS)
 
 
 def _parse_length_range(value: str) -> tuple[int, int]:
@@ -125,6 +94,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--formal-packed-targets",
+        action="store_true",
+        help=(
+            "Formal-language tasks only: serialize as '<bos> src <sep> tgt <eos>' instead of "
+            "the default one-target-token-per-source-token alignment. The packed form also "
+            "requires counting the source length back down to place <eos>, which fixed-state "
+            "recurrent models do not extrapolate."
+        ),
+    )
+
+    parser.add_argument(
         "--curriculum-num-steps",
         type=int,
         default=None,
@@ -188,6 +168,7 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.freeze_fraction = args.freeze_fraction if args.freeze_fraction is not None else 0.0
 
     rc.train_length_range = args.train_length_range
+    rc.formal_aligned_targets = not args.formal_packed_targets
     rc.early_stop = args.early_stop
 
     curriculum_args = {

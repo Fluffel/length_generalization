@@ -195,6 +195,12 @@ class RunConfig:
     batch_size: int = 64
     test_num: int = 2000
 
+    # Formal-language tasks only: emit one target token per source token (as
+    # formal_lang_suite does) instead of packing the whole target after a separator.
+    # See task_datasets.FormalLanguageDataset for why the packed form is much harder
+    # to length-generalize than the language itself is.
+    formal_aligned_targets: bool = True
+
     # When set, curriculum learning is used and train_length_range/test_length_ranges/
     # num_test_bins above are ignored (see CurriculumConfig for details).
     curriculum: Optional["CurriculumConfig"] = None
