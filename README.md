@@ -3,19 +3,18 @@ This repo contains code for the [paper](https://openreview.net/forum?id=U49N5V51
 
 See [QUICKSTART.md](QUICKSTART.md) for setup instructions, usage, and documentation of new features (including the MQAR Word Problem task).
 
-## Dependencies
-In current python environment run:
-    pip install torch transformers accelerate
+## Current setup and workflow
 
-S4 dependency:
-    pip install einops
+The ```example.sub``` file gives a blue-print of how experiments can be run. All dependencies are handled within the docker image. Run scripts for the different architectures can be found in ```algorithmic/run_scripts/```. 
 
-Mamba:
-    pip install mambapy
+#### Arguments
 
-olmo_core (see https://github.com/allenai/OLMo-core/tree/main)
-    git clone https://github.com/allenai/OLMo-core.git
-    cd OLMo-core
-    <!-- pip install -e .[all] -->
-    pip install -e ".[fla,transformers]"
+For help on the available arguments see ```algorithmic/run_scripts/language_modeling_train_shared.py```.
 
+
+#### Model Hyperparameters
+
+For each run, the model's hyperparameters need to be manually set within the respective run scripts in ```algorithmic/run_scripts/```. They form list over which the script iterates, performing training on all combinations of those model parameters.
+
+#### Tasks
+They can be simply specified within the .sub file.
