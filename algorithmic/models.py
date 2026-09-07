@@ -621,10 +621,17 @@ def _build_olmo_gdn_config(run_config: RunConfig, arch: ArchSlot):
     )
 
 
-def _materialize_olmo_model(cfg, *, max_seq_len: int) -> OLMoCoreCausalLMAdapter:
+def _materialize_olmo_model(
+    cfg, *, max_seq_len: int, init_seed: int = 0
+) -> OLMoCoreCausalLMAdapter:
     """Build and initialize an OLMo model according to OLMo-core's two-step API."""
     if max_seq_len <= 0:
         raise ValueError(f"max_seq_len must be positive, got {max_seq_len}.")
+
+    # OLMo ``init_weights`` uses a private ``torch.Generator`` seeded from
+    # ``cfg.init_seed`` (default 0), not the global PyTorch RNG. Set it from the
+    # training-loop seed so ``--seeds N`` actually varies initialization.
+    cfg.init_seed = init_seed
 
     # OLMo-core constructors intentionally leave parameters such as the GDN
     # recurrence gates uninitialized. Building on meta avoids doing a throwaway
@@ -658,7 +665,7 @@ def _build_olmo_base_transformer_config(
 
 
 def _build_olmo_transformer_model(
-    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int, seed: int = 0
 ):
     cfg = _build_olmo_base_transformer_config(
         vocab_size=len(tokenizer),
@@ -669,11 +676,11 @@ def _build_olmo_transformer_model(
         cfg.block = cfg.block.replace(
             sequence_mixer=cfg.block.sequence_mixer.replace(rope=None)
         )
-    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions, init_seed=seed)
 
 
 def _build_olmo_gdn_model(
-    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int, seed: int = 0
 ):
     cfg = _build_olmo_base_transformer_config(
         vocab_size=len(tokenizer),
@@ -683,11 +690,11 @@ def _build_olmo_gdn_model(
     cfg.block = cfg.block.replace(
         sequence_mixer=_build_olmo_gdn_config(run_config, arch)
     )
-    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions, init_seed=seed)
 
 
 def _build_olmo_hybrid_model(
-    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int, seed: int = 0
 ):
     motif = run_config.hybrid_layer_pattern.strip().lower()
     if not motif or any(c not in "as" for c in motif):
@@ -714,9 +721,12 @@ def _build_olmo_hybrid_model(
     cfg.block = {"attn": attn_block, "gdn": gdn_block}
     cfg.block_pattern = ["attn" if c == "a" else "gdn" for c in pattern]
 
-    return _materialize_olmo_model(cfg, max_seq_len=n_positions)
+    return _materialize_olmo_model(cfg, max_seq_len=n_positions, init_seed=seed)
 
-def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int):
+
+def build_model(
+    run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: int, seed: int = 0
+):
     if run_config.use_olmo_core:
         if arch.layer_norm is False:
             raise ValueError("OLMo-core builders currently require layer_norm=True.")
@@ -732,7 +742,7 @@ def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: i
             case "transformer":
                 LOGGER.info("Building OLMo-core transformer model")
                 return _build_olmo_transformer_model(
-                    run_config, arch, tokenizer, n_positions
+                    run_config, arch, tokenizer, n_positions, seed=seed
                 )
             case "ssm":
                 LOGGER.info(
@@ -741,7 +751,7 @@ def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: i
                     run_config.olmo_gdn_allow_neg_eigval,
                 )
                 return _build_olmo_gdn_model(
-                    run_config, arch, tokenizer, n_positions
+                    run_config, arch, tokenizer, n_positions, seed=seed
                 )
             case "hybrid":
                 LOGGER.info(
@@ -751,7 +761,7 @@ def build_model(run_config: RunConfig, arch: ArchSlot, tokenizer, n_positions: i
                     run_config.olmo_gdn_allow_neg_eigval,
                 )
                 return _build_olmo_hybrid_model(
-                    run_config, arch, tokenizer, n_positions
+                    run_config, arch, tokenizer, n_positions, seed=seed
                 )
             case _:
                 raise ValueError(run_config.model_family)

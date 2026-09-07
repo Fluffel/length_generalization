@@ -4,7 +4,6 @@ import argparse
 import logging
 import math
 import os
-import random
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -12,6 +11,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
+from transformers.trainer_utils import set_seed
 
 from dataset_generators import build_curriculum_datasets, build_datasets, is_formal_task
 from models import build_model, hybrid_group_parameters
@@ -792,8 +792,7 @@ def main(run_config: RunConfig) -> None:
     for seed in range(run_config.seeds):
         if use_wandb:
             _init_wandb_run_for_seed(run_config, seed)
-        torch.manual_seed(seed)
-        random.seed(seed)
+        set_seed(seed)
 
         try:
             with open(summary_path, "a") as summary_file:
@@ -849,7 +848,14 @@ def main(run_config: RunConfig) -> None:
                             allow_val_change=True,
                         )
 
-                    model = build_model(run_config, arch, tokenizer, n_positions)
+                    # Re-seed before each architecture so later sweep slots don't inherit
+                    # leftover RNG from the previous Trainer, and so OLMo/non-OLMo init
+                    # both see this seed. TrainingArguments.seed is required: Trainer.__init__
+                    # (and train() when model_init is set) call set_seed(args.seed), which
+                    # defaults to 42 and would otherwise wipe the loop seed before the first
+                    # batch. Eval datasets are built once above and shared across seeds.
+                    set_seed(seed)
+                    model = build_model(run_config, arch, tokenizer, n_positions, seed=seed)
                     print("wte std:", model.wte.weight.std().item() if hasattr(model, "wte") else model.transformer.wte.weight.std().item())
                     training_args = TrainingArguments(
                         output_dir=task_path,  # save_strategy="no" → nothing written here; one dir for all runs
@@ -868,6 +874,7 @@ def main(run_config: RunConfig) -> None:
                         warmup_steps=warmup_steps,
                         report_to="none",
                         run_name=metric_prefix,
+                        seed=seed,
                     )
 
                     freeze_cb: Optional[FreezeCallback] = None
