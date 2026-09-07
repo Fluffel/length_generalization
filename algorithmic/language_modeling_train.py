@@ -101,7 +101,8 @@ def format_log_prefix(
         reg = ""
         btw_blocks = ""
         ln_str = ""
-        pe = ""
+        if run_config.model_family == "ssm":
+            pe = ""
         neg_eig = "ne" if run_config.olmo_gdn_allow_neg_eigval else "none"
 
     parts: list[str] = []

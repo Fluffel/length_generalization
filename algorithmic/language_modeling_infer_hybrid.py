@@ -62,7 +62,7 @@ _WEIGHTS_NAME_RE_MODULAR = re.compile(
 )
 _WEIGHTS_NAME_RE_OLMO = re.compile(
     r"^olmohyb([as]+)(gdn[12])?(\d+)l(\d+)h(\d+)d([0-9.]+)dr"
-    r"(?:ne|none)?(?:frz(?:a|ssm)[0-9.]+)?"
+    r"(?:ne|none)?(nope|pe)?(?:frz(?:a|ssm)[0-9.]+)?"
     r"stp([0-9.]+)k([0-9eE+\-\.]+)lr_weights(?:_seed\d+_id\d+)?\.pt$"
 )
 
@@ -71,7 +71,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
     base = os.path.basename(path)
     m = _WEIGHTS_NAME_RE_OLMO.match(base)
     if m:
-        motif, gdn_variant, n_rep, nh, nd, _dr_s, _steps_k, _lr = m.groups()
+        motif, gdn_variant, n_rep, nh, nd, _dr_s, pe_mode, _steps_k, _lr = m.groups()
         return {
             "layer_pattern": motif,
             "n_pattern_repeats": int(n_rep),
@@ -79,7 +79,7 @@ def parse_architecture_from_weights_path(path: str) -> dict:
             "d_model": int(nd),
             "between_block_mlp_layers": 1,
             "layer_norm": True,
-            "nope": None,  # OLMo weight names do not currently encode rope/no-rope.
+            "nope": None if pe_mode is None else pe_mode == "nope",
             "ssm_kernel": gdn_variant or "gdn1",
             "olmo_gdn_variant": gdn_variant or "gdn1",
             "olmo": True,
@@ -466,7 +466,7 @@ def main():
         # The OLMo hybrid path maps SSM layers to the selected GatedDeltaNet variant.
         ssm_kernel="s4" if use_olmo else arch["ssm_kernel"],
     )
-    model = build_model(run_config, arch_slot, tokenizer, train_ds.n_positions)
+    model = build_model(run_config, arch_slot, tokenizer, train_ds.n_positions, seed=args.seed)
     model.load_state_dict(state, strict=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
