@@ -36,6 +36,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, choices=TASK_CHOICES)
     parser.add_argument("--seeds", type=int, default=1)
+    parser.add_argument(
+        "--dataset-seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed used once to materialize eval bins (and formal-language train "
+            "corpora). Independent of --seeds, which only varies model init and "
+            "the training stream."
+        ),
+    )
     parser.add_argument("--job-id", type=str, default="")
 
     parser.add_argument(
@@ -161,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
 def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.task = args.task
     rc.seeds = args.seeds
+    rc.dataset_seed = args.dataset_seed
     rc.job_id = args.job_id
 
     rc.use_nope = args.nope

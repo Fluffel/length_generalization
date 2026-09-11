@@ -21,7 +21,7 @@
 
 - **Most experiment controls (CLI args):**  
   Pass via script arguments parsed in `run_scripts/language_modeling_train_shared.py`, e.g.:
-  - task/seeds: `--task`, `--seeds`
+  - task/seeds: `--task`, `--seeds`, `--dataset-seed`
   - train schedule: `--train-steps`, `--warmup-steps`, `--eval-steps`, `--logging-steps`
   - length setup: `--train-length-range` (ignored if curriculum flags are set)
   - curriculum learning: `--curriculum-num-steps`, `--curriculum-step-size`, `--curriculum-steps-per-stage` (all three required together; see below)

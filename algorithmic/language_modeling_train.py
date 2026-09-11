@@ -34,11 +34,6 @@ from utils import (
 
 LOGGER = logging.getLogger(__name__)
 
-# Eval bins (and formal-language train corpora) are materialized once at this
-# seed and then reused for every architecture and every training seed. Later
-# ``set_seed`` calls only affect model init and the on-the-fly training stream.
-DATASET_SEED = 42
-
 try:
     import wandb
 except ImportError:  # pragma: no cover - optional dependency
@@ -734,6 +729,7 @@ def _init_wandb_run_for_seed(run_config: RunConfig, seed: int) -> None:
         "model_family": run_config.model_family,
         "job_id": run_config.job_id,
         "seed": seed,
+        "dataset_seed": run_config.dataset_seed,
         "eval_steps": run_config.eval_steps,
         "logging_steps": run_config.logging_steps,
         "num_seeds": run_config.seeds,
@@ -804,7 +800,11 @@ def main(run_config: RunConfig) -> None:
     stage_eval_datasets: Optional[list[dict[str, Any]]] = None
     curriculum_task_floor = 0
 
-    set_seed(DATASET_SEED)
+    # Eval bins (and formal-language train corpora) are materialized once at
+    # ``run_config.dataset_seed`` and then reused for every architecture and
+    # every training seed. Later ``set_seed`` calls only affect model init and
+    # the on-the-fly training stream.
+    set_seed(run_config.dataset_seed)
     if curriculum is not None:
         train_dataset, stage_eval_datasets = build_curriculum_datasets(run_config)
         # The task's own minimum feasible length: stage 0's desired range starts at 0,
@@ -838,7 +838,7 @@ def main(run_config: RunConfig) -> None:
     json_path = run_record_path(run_config)
     run_record = new_run_record(
         run_config,
-        dataset_seed=DATASET_SEED,
+        dataset_seed=run_config.dataset_seed,
         n_positions=n_positions,
         vocab_size=len(tokenizer),
         wandb_group=_wandb_group_for_experiment(run_config) if use_wandb else None,
@@ -910,7 +910,7 @@ def main(run_config: RunConfig) -> None:
                     # both see this seed. TrainingArguments.seed is required: Trainer.__init__
                     # (and train() when model_init is set) call set_seed(args.seed), which
                     # defaults to 42 and would otherwise wipe the loop seed before the first
-                    # batch. Eval datasets were built once above (DATASET_SEED) and are the
+                    # batch. Eval datasets were built once above (dataset_seed) and are the
                     # same object for every architecture; this re-seed only affects init and
                     # the streaming train iterator.
                     set_seed(seed)
@@ -1036,6 +1036,12 @@ if __name__ == "__main__":
     parser.add_argument("--logging-steps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--solved-acc-threshold", type=float, default=None)
+    parser.add_argument(
+        "--dataset-seed",
+        type=int,
+        default=None,
+        help="Seed used to materialize eval bins (default: RunConfig.dataset_seed=42).",
+    )
     args = parser.parse_args()
     presets = {
         "transformer": default_transformer_sweep,
@@ -1053,4 +1059,6 @@ if __name__ == "__main__":
         rc.eval_steps = args.eval_steps
     if args.solved_acc_threshold is not None:
         rc.solved_acc_threshold = args.solved_acc_threshold
+    if args.dataset_seed is not None:
+        rc.dataset_seed = args.dataset_seed
     main(rc)

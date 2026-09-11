@@ -174,6 +174,10 @@ class RunConfig:
 
     task: str = "parity"
     seeds: int = 1
+    # Seed used once to materialize eval bins (and formal-language train corpora).
+    # Independent of the training-loop seed, which only affects model init and the
+    # on-the-fly training stream.
+    dataset_seed: int = 42
     job_id: str = ""
 
     # MQAR configs
