@@ -253,6 +253,9 @@ class RunConfig:
     solved_acc_threshold: float = 0.98
 
     log_dir: str = "./logs"
+    # Same {task}/summary*.json layout as log_dir, but a separate tree so text
+    # summaries and machine-readable run records can be collected independently.
+    json_log_dir: str = "./json_logs"
     summary_basename: str = "summary.txt"
     report_to: str = "none"
     wandb_project: Optional[str] = None

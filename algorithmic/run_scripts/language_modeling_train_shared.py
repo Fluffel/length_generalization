@@ -139,6 +139,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--wandb-group", type=str, default=None)
+    parser.add_argument(
+        "--json-log-dir",
+        type=str,
+        default=None,
+        help="Root directory for JSON run records (default: ./json_logs). Uses the same {task}/ layout as the text logs.",
+    )
 
     parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
     parser.add_argument("--monoid_n", type=int, default=2)
@@ -206,6 +212,8 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.wandb_project = args.wandb_project
     rc.wandb_entity = args.wandb_entity
     rc.wandb_group = args.wandb_group
+    if args.json_log_dir is not None:
+        rc.json_log_dir = args.json_log_dir
 
     rc.monoid = args.monoid
     rc.monoid_n = args.monoid_n

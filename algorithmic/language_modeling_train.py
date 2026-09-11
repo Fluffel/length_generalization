@@ -15,6 +15,14 @@ from transformers.trainer_utils import set_seed
 
 from dataset_generators import build_curriculum_datasets, build_datasets, is_formal_task
 from models import build_model, hybrid_group_parameters
+from run_record import (
+    accs_jsonable,
+    arch_run_entry,
+    new_run_record,
+    run_record_path,
+    summary_rel_path,
+    write_run_record,
+)
 from utils import (
     ArchSlot,
     CurriculumConfig,
@@ -25,6 +33,11 @@ from utils import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# Eval bins (and formal-language train corpora) are materialized once at this
+# seed and then reused for every architecture and every training seed. Later
+# ``set_seed`` calls only affect model init and the on-the-fly training stream.
+DATASET_SEED = 42
 
 try:
     import wandb
@@ -69,18 +82,8 @@ def _max_steps_warmup(run_config: RunConfig, arch: ArchSlot) -> tuple[int, int]:
     return run_config.max_steps_default, run_config.warmup_default
 
 
-def _summary_rel_path(run_config: RunConfig) -> str:
-    if run_config.model_family == "transformer":
-        if run_config.use_nope:
-            mid = "-nope"
-        elif run_config.regularize != 0:
-            mid = f"-reg{run_config.regularize}"
-        else:
-            mid = ""
-        return f"summarylm{mid}{run_config.job_id}.txt"
-    if run_config.model_family == "ssm":
-        return f"summaryssm{run_config.job_id}.txt"
-    return f"summaryhybrid{run_config.job_id}.txt"
+# Backward-compatible alias; the canonical helper lives in ``run_record``.
+_summary_rel_path = summary_rel_path
 
 
 def format_log_prefix(
@@ -275,6 +278,7 @@ class AlgorithmicTrainCallback(TrainerCallback):
         self._train_bin_key: str = self._eval_acc_keys[0]
         self._mid_bin_key: str = self._eval_acc_keys[1] if len(self._eval_acc_keys) > 1 else self._train_bin_key
         self._best_snapshots: list[_EvalSnapshot] = []
+        self._logged_snapshots: list[dict[str, Any]] = []
         self._stopped_early: bool = False
         self._summary_written: bool = False
 
@@ -304,10 +308,35 @@ class AlgorithmicTrainCallback(TrainerCallback):
         print(line, file=self.summary_file)
         self.summary_file.flush()
 
+    def _logged_snapshot_from(self, snap: _EvalSnapshot) -> dict[str, Any]:
+        """One summary-file row: full-bin accuracies for a Pareto-kept eval."""
+        if self._stopped_early:
+            status = f"early stop {snap.epoch}"
+        else:
+            status = "reach max step"
+        train_show = float(snap.accs.get(self._train_bin_key, 0) or 0)
+        if train_show >= 0.99:
+            status = ">> " + status
+        # Bin order matches the log line (and is at most ``len(test_ranges)`` long).
+        accs = accs_jsonable({k: snap.accs[k] for k in self._eval_acc_keys if k in snap.accs})
+        return {
+            "status": status,
+            "epoch": snap.epoch,
+            "global_step": snap.global_step,
+            "accs": accs,
+        }
+
+    def reported_evals(self) -> list[dict[str, Any]]:
+        """Logged snapshots: one dict per summary line, ≤ number of eval bins."""
+        if self._summary_written:
+            return list(self._logged_snapshots)
+        return [self._logged_snapshot_from(snap) for snap in self._best_snapshots]
+
     def _write_best_results(self) -> None:
         if self._summary_written:
             return
         self._summary_written = True
+        self._logged_snapshots = [self._logged_snapshot_from(snap) for snap in self._best_snapshots]
         for snap in self._best_snapshots:
             if self._stopped_early:
                 msg = f"early stop {snap.epoch}\t\t"
@@ -550,6 +579,11 @@ class CurriculumTrainCallback(TrainerCallback):
         # new stage begins; see class docstring.
         self.stop_state: dict[str, Any] = {"should_stop": False, "fit_train_data": False}
         self.early_stop = run_config.early_stop
+        self._reported_evals: list[dict[str, Any]] = []
+
+    def reported_evals(self) -> list[dict[str, Any]]:
+        """Per-stage evals matching the lines written to the summary file."""
+        return list(self._reported_evals)
 
     def _stage_eval_keys(self, stage_idx: int) -> list[str]:
         return [f"eval_{name}_acc" for name in self.stage_eval_datasets[stage_idx]]
@@ -624,6 +658,16 @@ class CurriculumTrainCallback(TrainerCallback):
         if train_show >= 0.99:
             msg = ">> " + msg
         marker = f"[curriculum step {self.stage_idx + 1}/{self.num_stages} size={stage_size}] {msg}"
+        self._reported_evals.append(
+            {
+                "status": msg,
+                "stage": self.stage_idx + 1,
+                "num_stages": self.num_stages,
+                "stage_size": stage_size,
+                "global_step": state.global_step,
+                "accs": accs_jsonable(self.latest_acc),
+            }
+        )
         line = "\t".join(
             [
                 self.log_prefix,
@@ -759,6 +803,8 @@ def main(run_config: RunConfig) -> None:
     curriculum = run_config.curriculum
     stage_eval_datasets: Optional[list[dict[str, Any]]] = None
     curriculum_task_floor = 0
+
+    set_seed(DATASET_SEED)
     if curriculum is not None:
         train_dataset, stage_eval_datasets = build_curriculum_datasets(run_config)
         # The task's own minimum feasible length: stage 0's desired range starts at 0,
@@ -789,6 +835,16 @@ def main(run_config: RunConfig) -> None:
         else run_config.batch_size
     )
     use_wandb = _is_wandb_enabled(run_config)
+    json_path = run_record_path(run_config)
+    run_record = new_run_record(
+        run_config,
+        dataset_seed=DATASET_SEED,
+        n_positions=n_positions,
+        vocab_size=len(tokenizer),
+        wandb_group=_wandb_group_for_experiment(run_config) if use_wandb else None,
+    )
+    write_run_record(json_path, run_record)
+    LOGGER.info("Run record path: %s", json_path)
 
     for seed in range(run_config.seeds):
         if use_wandb:
@@ -854,7 +910,9 @@ def main(run_config: RunConfig) -> None:
                     # both see this seed. TrainingArguments.seed is required: Trainer.__init__
                     # (and train() when model_init is set) call set_seed(args.seed), which
                     # defaults to 42 and would otherwise wipe the loop seed before the first
-                    # batch. Eval datasets are built once above and shared across seeds.
+                    # batch. Eval datasets were built once above (DATASET_SEED) and are the
+                    # same object for every architecture; this re-seed only affects init and
+                    # the streaming train iterator.
                     set_seed(seed)
                     model = build_model(run_config, arch, tokenizer, n_positions, seed=seed)
                     print("wte std:", model.wte.weight.std().item() if hasattr(model, "wte") else model.transformer.wte.weight.std().item())
@@ -937,6 +995,23 @@ def main(run_config: RunConfig) -> None:
                     if curriculum is not None:
                         cb.trainer = trainer
                     trainer.train()
+
+                    wandb_run_id = None
+                    if use_wandb and wandb is not None and wandb.run is not None:
+                        wandb_run_id = wandb.run.id
+                    run_record["runs"].append(
+                        arch_run_entry(
+                            run_config,
+                            arch,
+                            seed=seed,
+                            max_steps=max_steps,
+                            log_prefix=output_tag,
+                            logged_snapshots=cb.reported_evals(),
+                            stopped_early=bool(getattr(cb, "_stopped_early", False)),
+                            wandb_run_id=wandb_run_id,
+                        )
+                    )
+                    write_run_record(json_path, run_record)
 
                     if run_config.save_final_weights:
                         wpath = os.path.join(task_path, f"{output_tag}_weights_seed{seed}_id{run_config.job_id}.pt")
