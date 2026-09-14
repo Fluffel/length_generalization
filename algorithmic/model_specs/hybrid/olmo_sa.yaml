@@ -1,0 +1,7 @@
+# OLMo-core hybrid: Gated DeltaNet block followed by an attention block (rotary
+# position embeddings). ssm_kernel is ignored; the mixer is olmo_gdn_variant.
+extends: s4_sa.yaml
+
+use_olmo_core: true
+olmo_gdn_variant: gdn2
+olmo_gdn_allow_neg_eigval: true

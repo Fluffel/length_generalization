@@ -1,0 +1,6 @@
+# OLMo-core transformer blocks with rotary position embeddings. The OLMo
+# builders require layer_norm and use one block feed-forward, so
+# between_block_mlp_layers and `regularize` are ignored.
+extends: gpt2.yaml
+
+use_olmo_core: true

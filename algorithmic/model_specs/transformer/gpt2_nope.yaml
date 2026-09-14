@@ -1,0 +1,4 @@
+# Local GPT-2 blocks without positional encoding.
+extends: gpt2.yaml
+
+use_nope: true

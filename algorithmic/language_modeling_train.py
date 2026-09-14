@@ -13,7 +13,8 @@ import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
 from transformers.trainer_utils import set_seed
 
-from dataset_generators import build_curriculum_datasets, build_datasets, is_formal_task
+from dataset_generators import ALL_TASKS, build_curriculum_datasets, build_datasets, is_formal_task
+from model_spec import available_model_specs, load_model_spec
 from models import build_model, hybrid_group_parameters
 from run_record import (
     accs_jsonable,
@@ -23,14 +24,7 @@ from run_record import (
     summary_rel_path,
     write_run_record,
 )
-from utils import (
-    ArchSlot,
-    CurriculumConfig,
-    RunConfig,
-    default_hybrid_sweep,
-    default_ssm_sweep,
-    default_transformer_sweep,
-)
+from utils import ArchSlot, CurriculumConfig, RunConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1021,44 +1015,262 @@ def main(run_config: RunConfig) -> None:
                 wandb.finish()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train with a preset RunConfig from utils.py (edit there or pass --preset).")
-    parser.add_argument(
-        "--preset",
-        choices=["transformer", "ssm", "hybrid"],
-        default="transformer",
-        help="Which default RunConfig factory to use; full settings live in utils.RunConfig.",
+# ---------------------------------------------------------------------------
+# CLI. The model itself comes from a spec in ``model_specs/`` (--model);
+# everything below is a task or training hyperparameter.
+# ---------------------------------------------------------------------------
+def _parse_length_range(value: str) -> tuple[int, int]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("train length range must be 'min,max'")
+    try:
+        start, end = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("train length range values must be integers") from exc
+    return (start, end)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train one model spec on one task. Model architecture (family, layers, "
+            "NoPE, layer norm, SSM kernel, ...) lives in model_specs/*.yaml; every "
+            "other hyperparameter is a flag here."
+        )
     )
+    parser.add_argument(
+        "--model",
+        "--model-specs",
+        dest="model",
+        type=str,
+        default=None,
+        help=(
+            "Model spec to train, e.g. 'hybrid/olmo_sa'. Resolved inside "
+            "algorithmic/model_specs/ (extension optional) or as a file path. "
+            "See --list-models."
+        ),
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="Print the available model specs and exit.",
+    )
+
+    parser.add_argument("--task", type=str, choices=list(ALL_TASKS))
+    parser.add_argument("--seeds", type=int, default=1)
+    parser.add_argument(
+        "--dataset-seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed used once to materialize eval bins (and formal-language train "
+            "corpora). Independent of --seeds, which only varies model init and "
+            "the training stream."
+        ),
+    )
+    parser.add_argument("--job-id", type=str, default="")
+
+    parser.add_argument(
+        "--freeze",
+        type=str,
+        default=None,
+        choices=["attention", "ssm"],
+        help=(
+            "Freeze this sub-architecture's weights within a hybrid model for the initial "
+            "fraction of training (see --freeze-fraction), then train the whole model for the "
+            "remaining steps. With curriculum learning, freezing is re-applied at the start of "
+            "every curriculum stage. Hybrid models only."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-fraction",
+        type=float,
+        default=0.5,
+        help=(
+            "Fraction (0, 1] of training steps (or, with curriculum learning, of each stage's "
+            "steps) during which --freeze weights are frozen. Requires --freeze."
+        ),
+    )
+
+    parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--warmup-steps", type=int, default=None)
+    parser.add_argument("--eval-steps", type=int, default=None)
+    parser.add_argument("--logging-steps", type=int, default=None)
+    parser.add_argument(
+        "--train-length-range",
+        type=_parse_length_range,
+        default=(0, 50),
+        help="Comma-separated min,max for training sequence length (e.g., 0,50). Ignored if curriculum flags are set.",
+    )
+
+    parser.add_argument(
+        "--formal-packed-targets",
+        action="store_true",
+        help=(
+            "Formal-language tasks only: serialize as '<bos> src <sep> tgt <eos>' instead of "
+            "the default one-target-token-per-source-token alignment. The packed form also "
+            "requires counting the source length back down to place <eos>, which fixed-state "
+            "recurrent models do not extrapolate."
+        ),
+    )
+
+    parser.add_argument(
+        "--curriculum-num-steps",
+        type=int,
+        default=None,
+        help="Number of curriculum stages. Requires --curriculum-step-size and --curriculum-steps-per-stage.",
+    )
+    parser.add_argument(
+        "--curriculum-step-size",
+        type=int,
+        default=None,
+        help="Train length grows by this much each stage (stage i trains on lengths up to step_size*(i+1)).",
+    )
+    parser.add_argument(
+        "--curriculum-steps-per-stage",
+        type=int,
+        default=None,
+        help="Number of trainer steps to run at each curriculum stage before growing the length.",
+    )
+
+    parser.add_argument("--early-stop", action="store_true")
+    parser.add_argument(
+        "--solved-acc-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Stop training when every eval length bin reaches this accuracy "
+            "(default: 0.98). Independent of --early-stop. Set above 1.0 to disable."
+        ),
+    )
+
+    parser.add_argument("--save-final-weights", action="store_true")
     parser.add_argument("--report-to", type=str, default="wandb", choices=["none", "wandb"])
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--wandb-group", type=str, default=None)
-    parser.add_argument("--logging-steps", type=int, default=None)
-    parser.add_argument("--eval-steps", type=int, default=None)
-    parser.add_argument("--solved-acc-threshold", type=float, default=None)
     parser.add_argument(
-        "--dataset-seed",
+        "--json-log-dir",
+        type=str,
+        default=None,
+        help="Root directory for JSON run records (default: ./json_logs). Uses the same {task}/ layout as the text logs.",
+    )
+
+    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
+    parser.add_argument("--monoid_n", type=int, default=2)
+    parser.add_argument("--key_size", type=int, default=32)
+    parser.add_argument("--query-fraction-upper", type=float, default=0.2)
+    parser.add_argument("--query-fraction-lower", type=float, default=0.2)
+
+    parser.add_argument("--key-len", type=int, default=4)
+    parser.add_argument("--mkar-vocab-size", type=int, default=128)
+    parser.add_argument("--marker-vocab-size", type=int, default=16)
+    parser.add_argument(
+        "--sort-vocab-size",
         type=int,
         default=None,
-        help="Seed used to materialize eval bins (default: RunConfig.dataset_seed=42).",
+        help=(
+            "Sort task only: number of distinct content tokens. If omitted, the "
+            "vocabulary has max_test_length tokens (the current default). Raised to "
+            "the maximum sequence length if smaller, so every example uses unique "
+            "tokens. When set, training examples cover the full vocabulary so a "
+            "total order over all tokens can be learned."
+        ),
     )
-    args = parser.parse_args()
-    presets = {
-        "transformer": default_transformer_sweep,
-        "ssm": default_ssm_sweep,
-        "hybrid": default_hybrid_sweep,
+    return parser
+
+
+def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
+    """Apply the non-model settings; the model fields already come from the spec."""
+    rc.task = args.task
+    rc.seeds = args.seeds
+    rc.dataset_seed = args.dataset_seed
+    rc.job_id = args.job_id
+
+    if args.freeze is not None and args.freeze_fraction is None:
+        raise SystemExit("--freeze requires --freeze-fraction to also be set.")
+    if args.freeze_fraction is not None:
+        if not (0.0 < args.freeze_fraction <= 1.0):
+            raise SystemExit(f"--freeze-fraction must be in (0, 1], got {args.freeze_fraction}.")
+    if args.freeze is not None and rc.model_family != "hybrid":
+        raise SystemExit(
+            f"--freeze is only supported for hybrid models, but model spec {rc.model_spec!r} "
+            f"has model_family={rc.model_family!r}."
+        )
+    rc.freeze_arch = args.freeze
+    rc.freeze_fraction = args.freeze_fraction if args.freeze_fraction is not None else 0.0
+
+    rc.train_length_range = args.train_length_range
+    rc.formal_aligned_targets = not args.formal_packed_targets
+    rc.early_stop = args.early_stop
+    if args.solved_acc_threshold is not None:
+        rc.solved_acc_threshold = args.solved_acc_threshold
+
+    curriculum_args = {
+        "--curriculum-num-steps": args.curriculum_num_steps,
+        "--curriculum-step-size": args.curriculum_step_size,
+        "--curriculum-steps-per-stage": args.curriculum_steps_per_stage,
     }
-    rc = presets[args.preset]()
+    num_curriculum_args_set = sum(v is not None for v in curriculum_args.values())
+    if num_curriculum_args_set > 0:
+        missing = [name for name, val in curriculum_args.items() if val is None]
+        if missing:
+            raise SystemExit(
+                "Curriculum learning requires all of --curriculum-num-steps, "
+                f"--curriculum-step-size, --curriculum-steps-per-stage; missing: {', '.join(missing)}"
+            )
+        rc.curriculum = CurriculumConfig(
+            num_steps=args.curriculum_num_steps,
+            step_size=args.curriculum_step_size,
+            steps_per_stage=args.curriculum_steps_per_stage,
+        )
+
+    rc.save_final_weights = args.save_final_weights
     rc.report_to = args.report_to
     rc.wandb_project = args.wandb_project
     rc.wandb_entity = args.wandb_entity
     rc.wandb_group = args.wandb_group
+    if args.json_log_dir is not None:
+        rc.json_log_dir = args.json_log_dir
+
+    rc.monoid = args.monoid
+    rc.monoid_n = args.monoid_n
+    rc.key_size = args.key_size
+    rc.query_fraction_upper = args.query_fraction_upper
+    rc.query_fraction_lower = args.query_fraction_lower
+
+    rc.key_len = args.key_len
+    rc.mkar_vocab_size = args.mkar_vocab_size
+    rc.marker_vocab_size = args.marker_vocab_size
+    if args.sort_vocab_size is not None and args.sort_vocab_size < 1:
+        raise SystemExit(f"--sort-vocab-size must be >= 1, got {args.sort_vocab_size}.")
+    rc.sort_vocab_size = args.sort_vocab_size
+
+    if args.train_steps is not None:
+        rc.max_steps_default = args.train_steps
+        rc.max_steps_large = args.train_steps
+    if args.warmup_steps is not None:
+        rc.warmup_default = args.warmup_steps
+        rc.warmup_large = args.warmup_steps
     if args.logging_steps is not None:
         rc.logging_steps = args.logging_steps
     if args.eval_steps is not None:
         rc.eval_steps = args.eval_steps
-    if args.solved_acc_threshold is not None:
-        rc.solved_acc_threshold = args.solved_acc_threshold
-    if args.dataset_seed is not None:
-        rc.dataset_seed = args.dataset_seed
-    main(rc)
+
+
+if __name__ == "__main__":
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.list_models:
+        print("\n".join(available_model_specs()))
+        raise SystemExit(0)
+    if args.model is None:
+        parser.error("--model is required; run with --list-models to see the available specs.")
+    if args.task is None:
+        parser.error("--task is required.")
+    try:
+        run_config = load_model_spec(args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
+    apply_args_to_config(run_config, args)
+    main(run_config)

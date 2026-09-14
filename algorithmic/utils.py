@@ -166,10 +166,18 @@ class ArchSlot:
 
 @dataclass
 class RunConfig:
-    """All settings for training (no CLI); pass to `language_modeling_train.main`."""
+    """All settings for training (no CLI); pass to `language_modeling_train.main`.
+
+    The model fields below (``model_family``, ``architectures``, ``use_nope``,
+    ``ssm_kernel``, ...) are what a spec in ``model_specs/`` sets; see
+    ``model_spec.load_model_spec``.
+    """
 
     model_family: ModelFamily
     architectures: list[ArchSlot]
+
+    # Name of the spec the model fields came from, recorded for reproducibility.
+    model_spec: Optional[str] = None
 
     task: str = "parity"
     seeds: int = 1
@@ -291,43 +299,6 @@ class RunConfig:
         """Largest step budget used for logging (actual steps depend on arch slot)."""
         return max(self.max_steps_default, self.max_steps_large) / 1000.0
 
-
-def default_transformer_sweep() -> RunConfig:
-    archs = [
-        ArchSlot(n_layer=l, n_head=h, d_model=d, lr=lr)
-        for l in [1, 2, 4]
-        for h in [1, 2, 4]
-        for d in [16, 64, 256]
-        for lr in [1e-3, 1e-4]
-    ]
-    return RunConfig(model_family="transformer", architectures=archs)
-
-
-def default_ssm_sweep() -> RunConfig:
-    archs = [
-        ArchSlot(n_layer=l, d_model=d, dropout=dr, lr=lr)
-        for l in [16, 32]
-        for d in [64, 256]
-        for dr in [0, 0.1]
-        for lr in [1e-3]
-    ]
-    return RunConfig(model_family="ssm", architectures=archs)
-
-
-def default_hybrid_sweep() -> RunConfig:
-    archs = [
-        ArchSlot(n_layer=l, n_head=h, d_model=d, dropout=dr, lr=lr)
-        for l in [1, 2, 4]
-        for h in [1, 2, 4]
-        for d in [16, 64, 256]
-        for dr in [0, 0.1]
-        for lr in [1e-3, 1e-4]
-    ]
-    return RunConfig(
-        model_family="hybrid",
-        architectures=archs,
-        hybrid_layer_pattern="sa",
-    )
 
 def run_length_encode(data: str) -> Iterator[Tuple[str, int]]:
     """Returns run length encoded Tuples for string"""

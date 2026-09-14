@@ -1,0 +1,6 @@
+# Local GPT-2 blocks with absolute position embeddings plus the paper's
+# regularizer on tril(PE W_Q W_K^T PE^T), which pushes attention towards
+# position-independent patterns.
+extends: gpt2.yaml
+
+regularize: 1.0e-4

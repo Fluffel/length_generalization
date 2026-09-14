@@ -1,0 +1,4 @@
+# OLMo-core hybrid (GDN + attention) with rotary embeddings removed.
+extends: olmo_sa.yaml
+
+use_nope: true

@@ -1,0 +1,4 @@
+# OLMo-core hybrid, recurrence-heavy: three Gated DeltaNet blocks per attention block.
+extends: olmo_sa.yaml
+
+hybrid_layer_pattern: sssa

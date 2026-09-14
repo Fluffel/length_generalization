@@ -39,12 +39,19 @@ Contains everything: model variants, tokenizer, datasets, training loop, evaluat
 
 **Output:** `lm-out-new-{task}/summary*.txt` files with per-config accuracy results, and `lm-out-new-multi-run/` for averaged results.
 
+**Model specs:** The model is chosen with `--model`, which names a YAML file in
+`model_specs/<family>/<variant>.yaml` (`model_specs/model_spec.py` loads it). A spec owns
+everything model-specific — `model_family`, `use_nope`, `regularize`, `ssm_kernel`,
+`hybrid_layer_pattern`, OLMo mixer settings — plus the `architectures` sweep, whose fields
+may be lists that expand to a cross product. A spec can `extends:` another one. All other
+hyperparameters are CLI flags.
+
 **CLI:**
 ```bash
-python language_modeling_train.py --task bin_majority [--nope] [--regularize 0.0001]
-python language_modeling_train.py --task mqar_word_problem --monoid parity --key_size 32 --query_fraction 0.2
-python language_modeling_train.py --task mqar_word_problem --monoid cyclic --monoid_n 5 --key_size 64
-python run_multiple_seeds.py --tasks bin_majority sort --num_run 5 [--nope] [--regularize 0.0001]
+python algorithmic/language_modeling_train.py --list-models
+python algorithmic/language_modeling_train.py --model transformer/gpt2 --task bin_majority
+python algorithmic/language_modeling_train.py --model transformer/gpt2_reg --task bin_majority
+python algorithmic/language_modeling_train.py --model hybrid/olmo_sssa --task mqar --seeds 5
 ```
 
 #### MQAR Word Problem Task

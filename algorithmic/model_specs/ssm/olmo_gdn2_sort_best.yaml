@@ -1,0 +1,10 @@
+extends:
+  olmo_gdn2.yaml
+
+architectures:
+  - n_layer: 2
+    d_model: 64
+    dropout: 0.1
+    lr: 1.0e-3
+    between_block_mlp_layers: 1
+    layer_norm: true

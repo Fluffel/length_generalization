@@ -1,0 +1,4 @@
+# OLMo-core hybrid with attention before the Gated DeltaNet block.
+extends: olmo_sa.yaml
+
+hybrid_layer_pattern: as

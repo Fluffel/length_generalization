@@ -5,16 +5,16 @@ See [QUICKSTART.md](QUICKSTART.md) for setup instructions, usage, and documentat
 
 ## Current setup and workflow
 
-The ```example.sub``` file gives a blue-print of how experiments can be run. All dependencies are handled within the docker image. Run scripts for the different architectures can be found in ```algorithmic/run_scripts/```. 
+The ```example.sub``` file gives a blue-print of how experiments can be run. All dependencies are handled within the docker image. All architectures share one entrypoint, ```algorithmic/language_modeling_train.py```, which is told which model to train with ```--model <spec>```.
 
 #### Arguments
 
-For help on the available arguments see ```algorithmic/run_scripts/language_modeling_train_shared.py```.
+For help on the available arguments run ```python algorithmic/language_modeling_train.py --help```.
 
 
 #### Model Hyperparameters
 
-For each run, the model's hyperparameters need to be manually set within the respective run scripts in ```algorithmic/run_scripts/```. They form list over which the script iterates, performing training on all combinations of those model parameters.
+The model — family, positional encoding, layer norm, SSM kernel, hybrid layer pattern, and the architecture sweep — is described by a YAML spec in ```algorithmic/model_specs/```; list them with ```python algorithmic/language_modeling_train.py --list-models```. Fields of an ```architectures``` entry may be lists, in which case training iterates over all combinations. Every other hyperparameter is a command-line flag and can therefore be set in the .sub file.
 
 #### Tasks
 They can be simply specified within the .sub file.

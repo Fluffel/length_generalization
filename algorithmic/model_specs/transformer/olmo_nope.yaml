@@ -1,0 +1,4 @@
+# OLMo-core transformer blocks without positional encoding.
+extends: olmo.yaml
+
+use_nope: true

@@ -1,0 +1,14 @@
+# Local S4 state-space blocks.
+model_family: ssm
+ssm_kernel: s4
+
+# Each entry may give a scalar or a list per field and expands to the cross
+# product of its lists, so widening a field turns this into a sweep. SSM blocks
+# have no attention heads, so n_head is left at its default.
+architectures:
+  - n_layer: [1, 2, 4]
+    d_model: [8, 16, 64]
+    dropout: [0, 0.1]
+    lr: [1.0e-3, 1.0e-4]
+    between_block_mlp_layers: 1
+    layer_norm: true

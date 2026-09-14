@@ -1,0 +1,4 @@
+# OLMo-core hybrid, attention-heavy: three attention blocks per Gated DeltaNet block.
+extends: olmo_sa.yaml
+
+hybrid_layer_pattern: aaas

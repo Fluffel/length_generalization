@@ -1,0 +1,4 @@
+# Local S4 + attention hybrid without positional encoding.
+extends: s4_sa.yaml
+
+use_nope: true

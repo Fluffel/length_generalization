@@ -1,0 +1,7 @@
+# OLMo-core Gated DeltaNet blocks. The OLMo builders replace the local kernels,
+# so ssm_kernel is ignored here; the mixer is chosen by olmo_gdn_variant.
+extends: s4.yaml
+
+use_olmo_core: true
+olmo_gdn_variant: gdn2
+olmo_gdn_allow_neg_eigval: true

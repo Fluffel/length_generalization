@@ -1,0 +1,4 @@
+# Local hybrid with Mamba instead of S4 as the recurrent block.
+extends: s4_sa.yaml
+
+ssm_kernel: mamba

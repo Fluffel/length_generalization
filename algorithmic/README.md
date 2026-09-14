@@ -3,30 +3,57 @@
 ## Where code lives and what to edit
 
 - `algorithmic/language_modeling_train.py`  
-  Main training/eval implementation (dataset construction, model build, trainer/eval loop).
+  Single entrypoint: CLI, dataset construction, model build, trainer/eval loop.
+
+- `algorithmic/model_specs/<family>/<variant>.yaml`  
+  Model specifications, selected with `--model <family>/<variant>`.
+
+- `algorithmic/model_spec.py`  
+  Loader for those YAML files (`load_model_spec`, `available_model_specs`).
 
 - `algorithmic/utils.py`  
-  Shared config dataclasses/default config factories (`RunConfig`, default sweeps).
-
-- `algorithmic/run_scripts/language_modeling_train_shared.py`  
-  Shared CLI parser and argument-to-config mapping.
-
-- `algorithmic/run_scripts/language_modeling_train_hybrid.py`  
-  Hybrid run entrypoint with architecture sweep definition.
+  Shared config dataclasses (`RunConfig`, `ArchSlot`, `CurriculumConfig`).
 
 ### Parameter control: where to change what
 
-- **Architecture control (edit code):**  
-  Adjust architecture sweep in `run_scripts/language_modeling_train_hybrid.py` inside `build_architectures(...)` (layers/heads/d_model/dropout/lr/etc).
+- **The model (YAML spec):**  
+  Everything model-specific lives in one spec file: `model_family`, `use_nope`,
+  `regularize`, `ssm_kernel`, `hybrid_layer_pattern`, the OLMo mixer settings, and the
+  `architectures` sweep (`n_layer`, `n_head`, `d_model`, `dropout`, `lr`,
+  `between_block_mlp_layers`, `layer_norm`). List the available specs with:
 
-- **Most experiment controls (CLI args):**  
-  Pass via script arguments parsed in `run_scripts/language_modeling_train_shared.py`, e.g.:
+  ```bash
+  python algorithmic/language_modeling_train.py --list-models
+  ```
+
+  Every field of an `architectures` entry accepts either a scalar or a list, and the
+  entry expands to the cross product of its lists — so widening a field turns a single
+  configuration into a sweep:
+
+  ```yaml
+  architectures:
+    - n_layer: [1, 2, 4]
+      n_head: [2, 4]
+      d_model: [16, 64, 256]
+      dropout: [0, 0.1]
+      lr: [1.0e-3, 1.0e-4]
+      between_block_mlp_layers: 1
+      layer_norm: true
+  ```
+
+  A spec can `extends:` another one and override single keys, which is how the variants
+  share one sweep (e.g. `hybrid/olmo_sssa.yaml` is `hybrid/olmo_sa.yaml` with a
+  different layer pattern). `--model` also accepts a path, so one-off specs can live
+  outside `model_specs/`.
+
+- **Everything else (CLI args):**
+  - model spec: `--model` (alias `--model-specs`), `--list-models`
   - task/seeds: `--task`, `--seeds`, `--dataset-seed`
   - train schedule: `--train-steps`, `--warmup-steps`, `--eval-steps`, `--logging-steps`
   - length setup: `--train-length-range` (ignored if curriculum flags are set)
   - curriculum learning: `--curriculum-num-steps`, `--curriculum-step-size`, `--curriculum-steps-per-stage` (all three required together; see below)
-  - model toggles: `--nope`, `--noln`, `--use-olmo`, `--ssm-kernel`, `--hybrid-layer-pattern`, `--regularize`
-  - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--key_size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`
+  - hybrid freezing: `--freeze`, `--freeze-fraction`
+  - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--key_size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`, `--sort-vocab-size`
 
 ### Curriculum learning
 
@@ -64,7 +91,8 @@ lm...stp0.05k0.001lr  [curriculum step 5/5 size=50] reach step cap    eval_len0-
 Example:
 
 ```bash
-python algorithmic/run_scripts/language_modeling_train_transformer.py \
+python algorithmic/language_modeling_train.py \
+  --model transformer/olmo_nope \
   --task parity \
   --curriculum-num-steps 5 \
   --curriculum-step-size 10 \
@@ -88,11 +116,23 @@ that read the same way regardless of how many stages there are:
 ### Training example
 
 ```bash
-python algorithmic/run_scripts/language_modeling_train_hybrid.py \
+python algorithmic/language_modeling_train.py \
+  --model hybrid/mamba_sa \
   --task mkar \
   --seeds 5 \
   --train-length-range 0,50 \
-  --nope \
+  --key-len 4 \
+  --mkar-vocab-size 128
+```
+
+The spec is the only thing that changes when the same task is trained with a different
+model, e.g. the OLMo Gated DeltaNet SSM instead of the local Mamba hybrid:
+
+```bash
+python algorithmic/language_modeling_train.py \
+  --model ssm/olmo_gdn2 \
+  --task mkar \
+  --seeds 5 \
   --key-len 4 \
   --mkar-vocab-size 128
 ```

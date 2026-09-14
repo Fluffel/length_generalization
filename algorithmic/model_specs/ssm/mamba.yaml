@@ -1,0 +1,4 @@
+# Local Mamba blocks (mambapy). Use 'mamba2' or 'mamba3' for the later kernels.
+extends: s4.yaml
+
+ssm_kernel: mamba
