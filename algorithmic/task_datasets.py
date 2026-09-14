@@ -687,8 +687,13 @@ class SelectiveCopyDataset(CustomDataset):
     Selective copying: vocabulary V = N ∪ M with |N| = marker_vocab_size numbered tokens
     #1 … #marker_vocab_size and |M| = misc_vocab_size arbitrary filler tokens.
 
-    For content (x_j)_{j=1}^L let i be the maximizer among indices with tokens in N
-    (equivalently, the largest j such that x_j ∈ N). The target token is x_{L+1-i}.
+    For content (x_j)_{j=1}^L let k be the 1-based marker number of the last token
+    in N (the last numbered marker in the word). The target is x_{L+1-k}, i.e. the
+    k-th token from the end. That index is in-bounds iff k ≤ L, so the last marker
+    is sampled first and the word is then built long enough for the lookback.
+
+    ``marker_vocab_size`` must be at most the training length-range max (enforced
+    by the dataset factory) so every marker is placeable on some training word.
 
     Sequence: <bos> x_1 … x_L <sep> answer <eos> with loss only on answer.
     """
@@ -715,37 +720,36 @@ class SelectiveCopyDataset(CustomDataset):
         self.range_min, self.range_max = length_range
         self.range_min = max(1, self.range_min)
         self.max_test_length = max_test_length
+        assert self.range_min <= self.range_max
         assert len(self.tokenizer) - 4 >= marker_vocab_size + misc_vocab_size
         assert (max_test_length >= self.range_max) or (max_test_length == -1)
 
     def _compute_answer_token_id(self, content: list[int]) -> int:
-        """Answer = x_{L+1-i} where i is 1-based index of last position with token in N."""
+        """Answer = x_{L+1-k} where k is the 1-based number of the last marker token."""
         last_marker = -1
         for tid in content:
             if tid < self._marker_vocab_size:
                 last_marker = tid
         assert last_marker >= 0
 
-        L = len(content) - 1
-        return content[L - last_marker]
+        idx = len(content) - 1 - last_marker
+        assert 0 <= idx < len(content)
+        return content[idx]
 
     def __iter__(self):
-        vocab_size = self._marker_vocab_size + self._misc_vocab_size
+        n_markers = self._marker_vocab_size
+        n_fillers = self._misc_vocab_size
+        vocab_size = n_markers + n_fillers
 
         while True:
-            length = random.randint(self.range_min, self.range_max)
-            while True:
-                content = [random.randrange(vocab_size) for _ in range(length)]
+            last_marker = random.randrange(min(n_markers, self.range_max))
+            length = random.randint(max(self.range_min, last_marker + 1), self.range_max)
+            last_pos = random.randrange(length)
 
-                valid_instance = False
-                for t in content:
-                    if t < self._marker_vocab_size: # is marker
-                        if t < length:
-                            valid_instance = True
-                        else:
-                            valid_instance = False
-                if valid_instance:
-                    break
+            content = [random.randrange(vocab_size) for _ in range(length)]
+            content[last_pos] = last_marker
+            for i in range(last_pos + 1, length):
+                content[i] = n_markers + random.randrange(n_fillers)
 
             ans = self._compute_answer_token_id(content)
 

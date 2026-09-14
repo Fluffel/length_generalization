@@ -155,11 +155,17 @@ def _make_task_dataset(
         case "flipflop":
             return FlipFlopDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "selective_copy":
+            # #k looks back k tokens, so the vocab cannot exceed the longest
+            # training word; use that cap for train *and* eval so they share a tokenizer.
+            train_hi = run_config.train_length_range[1]
+            if run_config.curriculum is not None:
+                train_hi = run_config.curriculum.stage_size(run_config.curriculum.num_steps - 1) - 1
+            marker_vocab_size = min(run_config.marker_vocab_size, max(1, train_hi))
             return SelectiveCopyDataset(
                 length_range,
                 max_test_length,
                 add_positional_offset=add_positional_offset,
-                marker_vocab_size=run_config.marker_vocab_size,
+                marker_vocab_size=marker_vocab_size,
             )
         case "mkar":
             return MKARDataset(
