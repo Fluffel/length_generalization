@@ -183,8 +183,9 @@ class RunConfig:
     seeds: int = 1
     # Seed used once to materialize eval bins (and formal-language train corpora).
     # Independent of the training-loop seed, which only affects model init and the
-    # on-the-fly training stream.
-    dataset_seed: int = 42
+    # on-the-fly training stream. None draws a random seed at the start of `main`
+    # (the CLI default unless --dataset-seed is passed).
+    dataset_seed: Optional[int] = None
     job_id: str = ""
 
     # MQAR configs. Key vocab size is derived from the longest eval length

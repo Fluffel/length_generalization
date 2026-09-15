@@ -537,7 +537,10 @@ def main():
         "--dataset-seed",
         type=int,
         default=42,
-        help="Seed used to materialize eval bins, matching training --dataset-seed (default: 42).",
+        help=(
+            "Seed used to materialize eval bins. Pass the training run's "
+            "dataset_seed (recorded in the JSON run record). Default: 42."
+        ),
     )
     parser.add_argument(
         "--test-num",

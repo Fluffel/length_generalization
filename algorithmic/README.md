@@ -48,7 +48,7 @@
 
 - **Everything else (CLI args):**
   - model spec: `--model` (alias `--model-specs`), `--list-models`
-  - task/seeds: `--task`, `--seeds`, `--dataset-seed`
+  - task/seeds: `--task`, `--seeds`, `--dataset-seed` (random if omitted)
   - train schedule: `--train-steps`, `--warmup-steps`, `--eval-steps`, `--logging-steps`
   - length setup: `--train-length-range` (ignored if curriculum flags are set)
   - curriculum learning: `--curriculum-num-steps`, `--curriculum-step-size`, `--curriculum-steps-per-stage` (all three required together; see below)

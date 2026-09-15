@@ -4,6 +4,7 @@ import argparse
 import logging
 import math
 import os
+import secrets
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -797,8 +798,16 @@ def main(run_config: RunConfig) -> None:
     # Eval bins (and formal-language train corpora) are materialized once at
     # ``run_config.dataset_seed`` and then reused for every architecture and
     # every training seed. Later ``set_seed`` calls only affect model init and
-    # the on-the-fly training stream.
-    set_seed(run_config.dataset_seed)
+    # the on-the-fly training stream. Draw a seed if the caller left it unset
+    # (CLI default) so the value can still be recorded for reproducibility.
+    dataset_seed = (
+        secrets.randbelow(2**32)
+        if run_config.dataset_seed is None
+        else run_config.dataset_seed
+    )
+    run_config.dataset_seed = dataset_seed
+    LOGGER.info("Dataset seed: %s", dataset_seed)
+    set_seed(dataset_seed)
     if curriculum is not None:
         train_dataset, stage_eval_datasets = build_curriculum_datasets(run_config)
         # The task's own minimum feasible length: stage 0's desired range starts at 0,
@@ -1061,11 +1070,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset-seed",
         type=int,
-        default=42,
+        default=None,
         help=(
             "Seed used once to materialize eval bins (and formal-language train "
             "corpora). Independent of --seeds, which only varies model init and "
-            "the training stream."
+            "the training stream. If omitted, a random seed is drawn and recorded "
+            "in the run log."
         ),
     )
     parser.add_argument("--job-id", type=str, default="")
