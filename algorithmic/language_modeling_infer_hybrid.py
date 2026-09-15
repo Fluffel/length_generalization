@@ -648,7 +648,8 @@ def main():
         default=None,
         help=(
             "Sort task only: number of distinct content tokens. Must match training. "
-            "If omitted, the vocabulary has max_test_length tokens (the current default)."
+            "If omitted, the vocabulary has max_test_length tokens (the current default). "
+            "Raised to the maximum sequence length if smaller, so every example uses unique tokens."
         ),
     )
     parser.add_argument(

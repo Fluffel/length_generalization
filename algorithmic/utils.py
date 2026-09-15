@@ -187,6 +187,9 @@ class RunConfig:
     query_fraction_upper: float = 0.2
     query_fraction_lower: float = 0.2
 
+    # Sort configs. None keeps the historical vocab of max_test_length tokens.
+    sort_vocab_size: Optional[int] = None
+
     # MKAR configs
     key_len = 4
     mkar_vocab_size = 128

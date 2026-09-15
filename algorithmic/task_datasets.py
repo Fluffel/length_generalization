@@ -286,15 +286,55 @@ class RepeatCopyDataset(CustomDataset):
 
 
 class SortDataset(CustomDataset):
-    def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
-        super().__init__(max_test_length*2 + 3, add_positional_offset) # bos, sep, eos
+    def __init__(
+        self,
+        length_range: tuple[int, int],
+        max_test_length: int,
+        add_positional_offset: bool = True,
+        vocab_size: int | None = None,
+        # cover_vocab: bool = False,
+    ):
+        super().__init__(max_test_length * 2 + 3, add_positional_offset)  # bos, sep, eos
 
-        self.tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
+        if vocab_size is None:
+            vocab_size = max_test_length
+        if vocab_size < 1:
+            raise ValueError(f"sort vocab_size must be >= 1, got {vocab_size}")
+        # Unique tokens: a sequence longer than the vocab cannot have a well-defined sort.
+        if max_test_length != -1:
+            vocab_size = max(vocab_size, max_test_length)
+
+        self._vocab_size = vocab_size
+        # self._cover_vocab = cover_vocab
+        self.tokenizer = customTokenizer([str(i) for i in range(vocab_size)])
         self.range_min, self.range_max = length_range
         self.range_min = max(1, self.range_min)
         self.max_test_length = max_test_length
-        assert len(self.tokenizer) - 4 >= max_test_length
-        assert (max_test_length >= self.range_max) or (max_test_length == -1)    # the pos emb is initialized based on max_test_length
+        assert len(self.tokenizer) - 4 == vocab_size
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)  # the pos emb is initialized based on max_test_length
+        assert self.range_max <= vocab_size
+
+    # def _sample_content(self, length: int, adj_state: list[int]) -> list[int]:
+    #     """Sample ``length`` unique content token ids, optionally covering the full vocab.
+
+    #     Sequences are never longer than the vocab, so sorting is always a permutation.
+    #     When ``cover_vocab`` is set and the sequence is shorter than the vocab, a cycling
+    #     adjacent pair ``(i, i+1)`` is injected so overlapping comparisons determine a
+    #     unique total order.
+    #     """
+    #     v = self._vocab_size
+    #     tokens = random.sample(range(v), length)
+    #     if self._cover_vocab and 2 <= length < v:
+    #         a = adj_state[0] % (v - 1)
+    #         adj_state[0] += 1
+    #         needed = (a, a + 1)
+    #         missing = [x for x in needed if x not in tokens]
+    #         if missing:
+    #             replaceable = [i for i, t in enumerate(tokens) if t not in needed]
+    #             for i, x in zip(replaceable, missing):
+    #                 tokens[i] = x
+    #         random.shuffle(tokens)
+    #     return tokens
 
     def __iter__(self):
         while True:

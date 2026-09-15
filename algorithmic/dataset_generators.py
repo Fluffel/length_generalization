@@ -130,7 +130,13 @@ def _make_task_dataset(
         case "repeat_copy":
             return RepeatCopyDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "sort":
-            return SortDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
+            return SortDataset(
+                length_range,
+                max_test_length,
+                add_positional_offset=add_positional_offset,
+                vocab_size=run_config.sort_vocab_size,
+                # cover_vocab=add_positional_offset and run_config.sort_vocab_size is not None,
+            )
         case "parity":
             return ParityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "addition":

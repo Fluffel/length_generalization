@@ -16,8 +16,16 @@ from typing import Any, Optional
 
 from utils import ArchSlot, RunConfig
 
-# Class-level RunConfig attributes that are not dataclass fields (no annotation).
-_RUNCONFIG_CLASS_ATTRS = ("key_len", "mkar_vocab_size", "marker_vocab_size", "early_stop")
+# RunConfig attributes that must appear in the JSON record. Class-level attributes
+# (no annotation) are omitted by ``asdict``; dataclass fields listed here are copied
+# again so task-specific flags such as ``sort_vocab_size`` cannot be dropped.
+_RUNCONFIG_CLASS_ATTRS = (
+    "key_len",
+    "mkar_vocab_size",
+    "marker_vocab_size",
+    "early_stop",
+    "sort_vocab_size",
+)
 
 
 def jsonable(obj: Any) -> Any:
