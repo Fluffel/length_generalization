@@ -621,6 +621,60 @@ class MQARWordProblemDataset(CustomDataset):
             yield instance, pos_ids, label
 
 
+class S5Dataset(CustomDataset):
+    """
+    S_5 word problem: given a sequence of permutations, predict their product.
+
+    Sequence: ``<bos> p1 p2 ... pL <sep> product <eos>``. Loss is scored only on
+    the product (and ``<eos>``). Permutations are the 5! = 120 elements of S_5
+    in one-line notation (identity is ``01234``), using the same tokens and
+    left-to-right composition as ``s5_monoid()`` / MQAR.
+
+    The product of ``p1, p2, ..., pL`` is the left fold
+    ``pL ∘ ... ∘ p2 ∘ p1`` (apply the first permutation, then the next, ...).
+    The empty product is the identity.
+    """
+
+    def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
+        super().__init__(max_test_length + 4, add_positional_offset)  # bos, sep, ans, eos
+
+        self.op, self.identity, self.monoid_size = s5_monoid()
+        self.tokenizer = customTokenizer(list(_S5_TOKENS))
+        assert self.monoid_size == len(_S5_TOKENS)
+        assert len(self.tokenizer) - 4 == self.monoid_size
+
+        self.range_min, self.range_max = length_range
+        self.max_test_length = max_test_length
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
+
+    def product(self, perm_indices: list[int]) -> int:
+        """Left-fold ``perm_indices`` under S_5 composition; empty product is identity."""
+        acc = self.identity
+        for idx in perm_indices:
+            acc = self.op(acc, idx)
+        return acc
+
+    def __iter__(self):
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            perms = [random.randint(0, self.monoid_size - 1) for _ in range(length)]
+            ans = self.product(perms)
+
+            instance = [self.tokenizer.bos_token_id]
+            instance.extend(perms)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(ans)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            # setting some tokens to [pad] will make the loss on these tokens (as pred targets) be ignored
+            label[:length + 2] = [self.tokenizer.pad_token_id] * (length + 2)  # bos + perms + sep
+
+            pos_ids = self.get_pos_ids(len(instance), self.max_test_length - length)
+
+            yield instance, pos_ids, label
+
+
 class FlipFlopDataset(CustomDataset):
     """
     Flip-flop language modeling (Liu et al., 2023): simulates a 1-bit register.

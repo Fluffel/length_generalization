@@ -28,6 +28,7 @@ try:
         RepeatCopyDataset,
         SelectiveCopyDataset,
         SortDataset,
+        S5Dataset,
         StarFreeCorpus,
         StarFreePostLanguageCorpus,
         TomitaCorpus,
@@ -52,6 +53,7 @@ except ImportError:
         RepeatCopyDataset,
         SelectiveCopyDataset,
         SortDataset,
+        S5Dataset,
         StarFreeCorpus,
         StarFreePostLanguageCorpus,
         TomitaCorpus,
@@ -85,6 +87,7 @@ ALGORITHMIC_TASKS: tuple[str, ...] = (
     "parity",
     "addition",
     "mqar",
+    "s5",
     "flipflop",
     "selective_copy",
     "mkar",
@@ -151,6 +154,8 @@ def _make_task_dataset(
                 monoid_type=run_config.monoid,
                 monoid_n=run_config.monoid_n,
             )
+        case "s5":
+            return S5Dataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "flipflop":
             return FlipFlopDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "selective_copy":
