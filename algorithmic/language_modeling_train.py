@@ -1156,9 +1156,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root directory for JSON run records (default: ./json_logs). Uses the same {task}/ layout as the text logs.",
     )
 
-    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
+    parser.add_argument(
+        "--monoid",
+        type=str,
+        default="parity",
+        choices=["parity", "cyclic", "s5"],
+        help="MQAR monoid: parity (Z_2 XOR), cyclic (Z_n addition), or s5 (S_5 composition).",
+    )
     parser.add_argument("--monoid_n", type=int, default=2)
-    parser.add_argument("--key_size", type=int, default=32)
     parser.add_argument("--query-fraction-upper", type=float, default=0.2)
     parser.add_argument("--query-fraction-lower", type=float, default=0.2)
 
@@ -1245,7 +1250,6 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
 
     rc.monoid = args.monoid
     rc.monoid_n = args.monoid_n
-    rc.key_size = args.key_size
     rc.query_fraction_upper = args.query_fraction_upper
     rc.query_fraction_lower = args.query_fraction_lower
 

@@ -64,14 +64,13 @@ Combines **associative recall** (finding key-value pairs in a haystack) with **m
 - Answer: single monoid element = left-fold of retrieved values in query order
 
 **Parameters:**
-- `--monoid {parity, cyclic}` — monoid preset (`parity` = Z_2 XOR, `cyclic` = Z_n addition)
+- `--monoid {parity, cyclic, s5}` — monoid preset (`parity` = Z_2 XOR, `cyclic` = Z_n addition, `s5` = S_5 composition)
 - `--monoid_n N` — order for cyclic monoid
-- `--key_size K` — number of distinct keys
 - `--query_fraction F` — fraction of content length for queries (default 0.2)
 
-**Vocabulary:** `[k0..k_{K-1}, m0..m_{M-1}]` — keys and monoid elements in a single flat vocab.
+**Vocabulary:** keys `k0..k_{K-1}` plus monoid tokens. `K` is derived as `(L_max - 1) // 2` from the longest evaluation length (keys are unique, so T cannot exceed that). Parity/cyclic use `m0..m_{M-1}`; S_5 uses one-line permutation tokens (`01234`, …; 120 elements).
 
-**Extensibility:** The class takes an arbitrary `op(a, b) -> c` callable + `identity`, so new monoids (S_3, arbitrary Cayley tables via `monoid_from_cayley_table()`, etc.) can be added without changing the dataset class.
+**Extensibility:** The class takes an arbitrary `op(a, b) -> c` callable + `identity`, so new monoids (arbitrary Cayley tables via `monoid_from_cayley_table()`, etc.) can be added without changing the dataset class.
 
 **Planned extension (TODO):** CoT/steps mode where intermediate fold results are output per query position (e.g., for Q queries producing values v1, v2, v3: output `v1, op(v1,v2), op(op(v1,v2),v3)` instead of just the final result).
 

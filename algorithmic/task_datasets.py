@@ -1,3 +1,4 @@
+import itertools
 import math
 import random
 import string
@@ -454,6 +455,8 @@ class AdditionDataset(CustomDataset):
 # Each returns (op, identity, monoid_size) where op: (int, int) -> int
 # operates on monoid element indices 0..monoid_size-1.
 
+MQAR_MONOID_TYPES = ("parity", "cyclic", "s5")
+
 def parity_monoid():
     """Z_2 under XOR. Elements: {0, 1}."""
     return (lambda a, b: a ^ b), 0, 2
@@ -461,6 +464,24 @@ def parity_monoid():
 def cyclic_monoid(n: int):
     """Z_n under addition mod n. Elements: {0, 1, ..., n-1}."""
     return (lambda a, b: (a + b) % n), 0, n
+
+_S5_DEGREE = 5
+_S5_PERMS = list(itertools.permutations(range(_S5_DEGREE)))
+_S5_INDEX = {p: i for i, p in enumerate(_S5_PERMS)}
+_S5_TOKENS = ["".join(map(str, p)) for p in _S5_PERMS]
+
+
+def s5_monoid():
+    """S_5 under composition. Apply the left permutation, then the right.
+
+    Elements are the 5! = 120 permutations of {0,1,2,3,4}, indexed in
+    lexicographic order (identity is 0). Tokens use one-line notation,
+    e.g. identity is ``01234``.
+    """
+    def op(a: int, b: int) -> int:
+        pa, pb = _S5_PERMS[a], _S5_PERMS[b]
+        return _S5_INDEX[tuple(pb[x] for x in pa)]
+    return op, 0, len(_S5_PERMS)
 
 def monoid_from_cayley_table(table: list[list[int]], identity: int):
     """
@@ -471,76 +492,92 @@ def monoid_from_cayley_table(table: list[list[int]], identity: int):
     return (lambda a, b: table[a][b]), identity, monoid_size
 
 
+def mqar_key_vocab_size(max_test_length: int) -> int:
+    """Largest number of unique keys an MQAR instance of content length ``max_test_length`` can contain.
+
+    Content is T key-value pairs plus Q query keys, and Q is at least 1, so
+    T <= (L_max - 1) // 2 — around half the longest evaluation length.
+    """
+    return max(1, (max_test_length - 1) // 2)
+
+
 class MQARWordProblemDataset(CustomDataset):
     def __init__(self, length_range: tuple[int, int],
-                 max_test_length: int, add_positional_offset: bool = True, key_size: int = 32,
-                 query_fraction_upper: float = 0.2, query_fraction_lower: float = 0.2, monoid_type: str = "parity", monoid_n: int = 2):
+                 max_test_length: int, add_positional_offset: bool = True,
+                 query_fraction_upper: float = 0.2, query_fraction_lower: float = 0.2,
+                 monoid_type: str = "parity", monoid_n: int = 2):
         """
         MQAR Word Problem dataset.
 
         Args:
-            tokenizer: customTokenizer whose vocab is [k0..k_{K-1}, m0..m_{M-1}] + specials.
             length_range: (min, max) for the content length (2T + Q).
-            max_test_length: max content length for position ID offset (-1 for eval).
-            key_size: |K|, number of distinct keys.
-            monoid_size: |M|, number of monoid elements.
+            max_test_length: max content length (also sizes the key vocabulary).
             query_fraction_upper: upper bound for the fraction of content length devoted to queries.
             query_fraction_lower: lower bound for the fraction of content length devoted to queries.
-            op: binary monoid operation on element indices (0..M-1) -> (0..M-1).
-            identity: index of the monoid identity element.
+            monoid_type: ``parity`` (Z_2 XOR), ``cyclic`` (Z_n addition), or ``s5``.
+            monoid_n: order n for the cyclic monoid.
         """
-        super().__init__(-1, add_positional_offset) # placeholder
+        # <bos> + content + <sep> + <sep> + answer + <eos>; the T=1,Q=1 floor
+        # can make a tiny instance 8 tokens even when max_test_length < 3.
+        super().__init__(max(max_test_length, 3) + 5, add_positional_offset)
 
         match monoid_type:
             case "parity":
                 self.op, self.identity, self.monoid_size = parity_monoid()
+                monoid_tokens = [f"m{i}" for i in range(self.monoid_size)]
             case "cyclic":
                 self.op, self.identity, self.monoid_size = cyclic_monoid(monoid_n)
+                monoid_tokens = [f"m{i}" for i in range(self.monoid_size)]
+            case "s5":
+                self.op, self.identity, self.monoid_size = s5_monoid()
+                monoid_tokens = list(_S5_TOKENS)
+            case _:
+                raise ValueError(
+                    f"Unknown monoid_type {monoid_type!r}; expected one of {MQAR_MONOID_TYPES}"
+                )
 
-        vocab = [f"k{i}" for i in range(key_size)] + [f"m{i}" for i in range(self.monoid_size)]
-        self.tokenizer = customTokenizer(vocab)
         self.range_min, self.range_max = length_range
+        self.range_min = max(1, self.range_min)
         self.max_test_length = max_test_length
-        self.key_size = key_size
         self.query_fraction_upper = query_fraction_upper
         self.query_fraction_lower = query_fraction_lower
+        self.monoid_type = monoid_type
 
+        # Keys must be unique within an instance, so the vocab is the largest
+        # T reachable at the longest evaluation length — not a separate hyperparameter.
+        self.key_size = mqar_key_vocab_size(max_test_length)
+
+        vocab = [f"k{i}" for i in range(self.key_size)] + monoid_tokens
+        self.tokenizer = customTokenizer(vocab)
 
         # Key token IDs: 0..key_size-1
         # Monoid token IDs: key_size..key_size+monoid_size-1
-        self.monoid_token_offset = key_size
+        self.monoid_token_offset = self.key_size
 
-        # Validate constraints
         assert 0 < query_fraction_lower <= query_fraction_upper < 1, "query_fraction must be in (0, 1)"
-        # Ensure we can always form valid instances at range_min
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
         self._validate_length(self.range_min)
+        if max_test_length > 0:
+            self._validate_length(max_test_length)
 
-    def _derive_T_Q(self, length: int):
+    def _derive_T_Q(self, length: int, query_fraction: float | None = None):
         """Derive T (num update pairs) and Q (num queries) from content length."""
-        query_fraction = random.uniform(self.query_fraction_lower, self.query_fraction_upper)
-   
+        if query_fraction is None:
+            query_fraction = random.uniform(self.query_fraction_lower, self.query_fraction_upper)
+
         Q = max(1, round(query_fraction * length))
-        T = (length - Q) // 2
-        # Clamp: need T >= Q (enough keys to query) and T >= 1
-        if T < Q:
-            T = Q
-        T = min(T, self.key_size)  # can't exceed available keys
+        T = max(1, (length - Q) // 2)
         Q = min(Q, T)  # can't query more keys than we have
         return T, Q
 
     def _validate_length(self, length: int):
-        T, Q = self._derive_T_Q(length)
+        T, Q = self._derive_T_Q(length, self.query_fraction_lower)
         assert T >= 1, f"Cannot form valid instance: T={T} at length={length}"
         assert Q >= 1, f"Cannot form valid instance: Q={Q} at length={length}"
         assert T <= self.key_size, (
-            f"key_size={self.key_size} too small for T={T} at length={length}")
-
-    @property
-    def n_positions(self):
-        """Compute max sequence length (for n_positions in GPT2Config)."""
-        T, Q = self._derive_T_Q(self.max_test_length)
-        # <bos> k m k m ... <sep> q q ... <sep> answer <eos>
-        return 2 * T + Q + 5  # bos + 2T + sep + Q + sep + answer + eos
+            f"key vocab ({self.key_size}, from max_test_length={self.max_test_length}) "
+            f"too small for T={T} at length={length}"
+        )
 
     def __iter__(self):
         while True:
@@ -579,13 +616,6 @@ class MQARWordProblemDataset(CustomDataset):
             mask_len = 2 * T + Q + 3  # bos + 2T pairs + sep + Q queries + sep
             label[:mask_len] = [self.tokenizer.pad_token_id] * mask_len
 
-            # Position IDs with random offset
-            # if self.max_test_length != -1:
-            #     n_pos = self.n_positions()
-            #     offset = random.randint(0, max(0, n_pos - len(instance)))
-            # else:
-            #     offset = 0
-            # pos_ids = list(range(offset, len(instance) + offset))
             pos_ids = self.get_pos_ids(len(instance), max(0, self.n_positions - len(instance)))
 
             yield instance, pos_ids, label

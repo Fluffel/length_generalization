@@ -146,7 +146,6 @@ def _make_task_dataset(
                 length_range,
                 max_test_length,
                 add_positional_offset=add_positional_offset,
-                key_size=run_config.key_size,
                 query_fraction_upper=run_config.query_fraction_upper,
                 query_fraction_lower=run_config.query_fraction_lower,
                 monoid_type=run_config.monoid,

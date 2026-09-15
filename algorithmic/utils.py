@@ -187,10 +187,10 @@ class RunConfig:
     dataset_seed: int = 42
     job_id: str = ""
 
-    # MQAR configs
+    # MQAR configs. Key vocab size is derived from the longest eval length
+    # (see task_datasets.mqar_key_vocab_size), not a separate hyperparameter.
     monoid: str = "parity"
     monoid_n: int = 2
-    key_size: int = 32
     query_fraction_upper: float = 0.2
     query_fraction_lower: float = 0.2
 

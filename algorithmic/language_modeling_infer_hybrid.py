@@ -242,7 +242,9 @@ def infer_max_test_length_from_state(task: str, state: dict, fallback: int) -> i
         return n_positions - 4
     if task in {"unique_copy", "repeat_copy", "sort"}:
         return (n_positions - 3) // 2
-    # MQAR n_positions depends on derived (T, Q), not a simple inverse.
+    if task == "mqar":
+        # bos + content + sep + sep + answer + eos
+        return n_positions - 5
     return fallback
 
 
@@ -514,7 +516,6 @@ def build_eval_run_config(args: argparse.Namespace, arch: dict, nope: bool, use_
         formal_aligned_targets=not args.formal_packed_targets,
         monoid=args.monoid,
         monoid_n=args.monoid_n,
-        key_size=args.key_size,
         query_fraction_upper=args.query_fraction,
         query_fraction_lower=args.query_fraction,
     )
@@ -636,9 +637,14 @@ def main():
         default=None,
         help="When passing explicit layer dims: motif of 'a' (attention) and 's' (SSM) repeated --n-layer times (default: 'sa' or 'as' from --start-with-attention).",
     )
-    parser.add_argument("--monoid", type=str, default="parity", choices=["parity", "cyclic"])
+    parser.add_argument(
+        "--monoid",
+        type=str,
+        default="parity",
+        choices=["parity", "cyclic", "s5"],
+        help="MQAR monoid: parity (Z_2 XOR), cyclic (Z_n addition), or s5 (S_5 composition).",
+    )
     parser.add_argument("--monoid_n", type=int, default=2)
-    parser.add_argument("--key_size", type=int, default=32)
     parser.add_argument("--query_fraction", type=float, default=0.2)
     parser.add_argument("--key-len", type=int, default=4)
     parser.add_argument("--mkar-vocab-size", type=int, default=128)

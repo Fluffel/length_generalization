@@ -5,7 +5,7 @@ Code for [*A Formal Framework for Understanding Length Generalization in Transfo
 ## What's new in this fork
 
 - **MQAR Word Problem task** (`MQARWordProblemDataset`) — combines associative recall with monoid state tracking. See [Task description](#mqar-word-problem) below.
-- **Monoid presets** — `parity_monoid()` (Z_2 XOR), `cyclic_monoid(n)` (Z_n), `monoid_from_cayley_table()` (arbitrary)
+- **Monoid presets** — `parity_monoid()` (Z_2 XOR), `cyclic_monoid(n)` (Z_n), `s5_monoid()` (S_5), `monoid_from_cayley_table()` (arbitrary)
 - **`pyproject.toml`** for dependency management
 - **API updates** — migrated `evaluation_strategy` to `eval_strategy` for transformers >= 4.45 compatibility
 
@@ -99,14 +99,14 @@ Results are written to `lm-out-new-multi-run/`.
 ### MQAR Word Problem
 
 ```bash
-# Parity monoid (Z_2 under XOR), 32 keys, 20% of sequence as queries
-python language_modeling_train.py --task mqar_word_problem --monoid parity --key_size 32 --query_fraction 0.2
+# Parity monoid (Z_2 under XOR), 20% of sequence as queries
+python language_modeling_train.py --task mqar --monoid parity --query-fraction-lower 0.2 --query-fraction-upper 0.2
 
-# Cyclic monoid Z_5, 64 keys
-python language_modeling_train.py --task mqar_word_problem --monoid cyclic --monoid_n 5 --key_size 64
+# Cyclic monoid Z_5
+python language_modeling_train.py --task mqar --monoid cyclic --monoid_n 5
 
-# With NoPE
-python language_modeling_train.py --task mqar_word_problem --monoid parity --key_size 32 --nope
+# S_5 (permutation composition; 120 one-line tokens)
+python language_modeling_train.py --task mqar --monoid s5
 ```
 
 See the dedicated section below for details on the task.
@@ -155,10 +155,11 @@ The task tests two capabilities simultaneously:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--monoid` | `parity` | Monoid preset: `parity` (Z_2 XOR) or `cyclic` (Z_n addition) |
+| `--monoid` | `parity` | Monoid preset: `parity` (Z_2 XOR), `cyclic` (Z_n addition), or `s5` (S_5 composition) |
 | `--monoid_n` | `2` | Order n for the cyclic monoid (only used with `--monoid cyclic`) |
-| `--key_size` | `32` | Number of distinct keys \|K\| |
-| `--query_fraction` | `0.2` | Fraction of content length devoted to queries |
+| `--query-fraction-lower` / `--query-fraction-upper` | `0.2` | Fraction of content length devoted to queries |
+
+The key vocabulary is not a flag: keys are unique per instance, so `|K| = (L_max - 1) // 2` from the longest evaluation length.
 
 ### Length generalization behavior
 

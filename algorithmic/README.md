@@ -53,7 +53,7 @@
   - length setup: `--train-length-range` (ignored if curriculum flags are set)
   - curriculum learning: `--curriculum-num-steps`, `--curriculum-step-size`, `--curriculum-steps-per-stage` (all three required together; see below)
   - hybrid freezing: `--freeze`, `--freeze-fraction`
-  - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--key_size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`, `--sort-vocab-size`
+  - task params: `--key-len`, `--mkar-vocab-size`, `--marker-vocab-size`, `--monoid`, `--monoid_n`, `--query-fraction-lower`, `--query-fraction-upper`, `--sort-vocab-size`
 
 ### Curriculum learning
 
