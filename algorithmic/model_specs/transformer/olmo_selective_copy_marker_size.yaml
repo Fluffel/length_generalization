@@ -1,0 +1,11 @@
+extends:
+  olmo_nope.yaml
+
+architectures:
+  - n_layer: 4
+    n_head: 1
+    d_model: 64
+    dropout: 0.1
+    lr: 1.0e-3
+    between_block_mlp_layers: 1
+    layer_norm: true
