@@ -267,7 +267,7 @@ class AlgorithmicTrainCallback(TrainerCallback):
         self.early_stop = run_config.early_stop
         self.solved_acc_threshold = run_config.solved_acc_threshold
         self.metric_prefix = metric_prefix
-        # Eval metrics use length bins from ``test_ranges`` (e.g. eval_len0-49_acc), not train_length_range
+        # Eval metrics use length bins from ``test_ranges`` (e.g. eval_len0-50_acc), not train_length_range
         # (which can differ by one from the first bin). Wrong keys → no early stop / no train/acc in W&B.
         self._eval_acc_keys: list[str] = [f"eval_len{a}-{b}_acc" for a, b in test_ranges]
         self._train_bin_key: str = self._eval_acc_keys[0]

@@ -106,12 +106,11 @@ class CurriculumConfig:
     growing from 0: ``(0, step_size - 1)``, then ``(step_size, 2 * step_size - 1)``,
     then ``(2 * step_size, 3 * step_size - 1)``, etc. Each stage runs for
     ``steps_per_stage`` trainer steps (or fewer if solved early), after which the
-    window shifts forward by ``step_size`` for the next stage. Evaluation at the end
+    window shifts forward by ``step_size`` for the next stage.     Evaluation at the end
     of each stage covers 1x, 2x, and 3x of that stage's cumulative length reached so
-    far (mirroring ``RunConfig.test_length_ranges`` but recomputed per stage instead
-    of once for the whole run) — e.g. stage 1 (cumulative length 20) evaluates at
-    (0,19), (20,39), (40,59), independent of the narrower (10,19) window it actually
-    trains on.
+    far (recomputed per stage instead of once for the whole run) — e.g. stage 1
+    (cumulative length 20) evaluates at (0,19), (20,39), (40,59), independent of the
+    narrower (10,19) window it actually trains on.
 
     When set on ``RunConfig``, this replaces ``train_length_range`` /
     ``test_length_ranges`` / ``num_test_bins`` as the source of truth for
@@ -274,14 +273,19 @@ class RunConfig:
 
     @property
     def test_length_ranges(self) -> list[tuple[int, int]]:
-        tr = self.train_length_range
-        test_length_ranges = []
-        length_delta = tr[1] - tr[0]
-        for i in range(self.num_test_bins):
-            start = tr[0] + i * length_delta # 0, 50 -> 0, 50; 51, 
-            end = start + length_delta - 1
-            test_length_ranges.append((start, end))
-        return test_length_ranges
+        """Inclusive eval bins: first bin is the train window; later bins are
+        contiguous and start at the previous hi + 1.
+
+        For the default ``train_length_range=(0, 50)`` and ``num_test_bins=3`` this
+        is ``[(0, 50), (51, 100), (101, 150)]``.
+        """
+        lo, hi = self.train_length_range
+        bins = [(lo, hi)]
+        length_delta = hi - lo
+        for _ in range(self.num_test_bins - 1):
+            lo, hi = hi + 1, hi + length_delta
+            bins.append((lo, hi))
+        return bins
 
     def train_steps_k(self) -> float:
         """Largest step budget used for logging (actual steps depend on arch slot)."""

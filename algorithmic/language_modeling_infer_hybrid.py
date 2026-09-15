@@ -563,7 +563,7 @@ def main():
         default="train",
         help=(
             "Which eval bins to score with --eval-full: 'train' (in-distribution / training-length "
-            "bin, default), 'all', or a comma-separated list of keys such as len0-49,len50-99."
+            "bin, default), 'all', or a comma-separated list of keys such as len0-50,len51-100."
         ),
     )
     parser.add_argument(
