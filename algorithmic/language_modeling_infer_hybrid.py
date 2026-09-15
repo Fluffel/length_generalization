@@ -522,6 +522,7 @@ def build_eval_run_config(args: argparse.Namespace, arch: dict, nope: bool, use_
     rc.key_len = args.key_len
     rc.mkar_vocab_size = args.mkar_vocab_size
     rc.marker_vocab_size = args.marker_vocab_size
+    rc.marker_frequency = args.marker_frequency
     rc.sort_vocab_size = args.sort_vocab_size
     return rc
 
@@ -642,6 +643,16 @@ def main():
     parser.add_argument("--key-len", type=int, default=4)
     parser.add_argument("--mkar-vocab-size", type=int, default=128)
     parser.add_argument("--marker-vocab-size", type=int, default=16)
+    parser.add_argument(
+        "--marker-frequency",
+        type=float,
+        default=0.2,
+        help=(
+            "Selective copy only: fraction of content tokens that are numbered "
+            "markers. Must match training. The count is ceil(length * frequency), "
+            "including the last marker, clamped to [1, length]. Must be in [0, 1]."
+        ),
+    )
     parser.add_argument(
         "--sort-vocab-size",
         type=int,

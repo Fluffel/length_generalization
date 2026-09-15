@@ -1,3 +1,4 @@
+import math
 import random
 import string
 
@@ -695,6 +696,12 @@ class SelectiveCopyDataset(CustomDataset):
     ``marker_vocab_size`` must be at most the training length-range max (enforced
     by the dataset factory) so every marker is placeable on some training word.
 
+    ``marker_frequency`` is the fraction of content tokens that are numbered
+    markers. The count is ``ceil(L * marker_frequency)``, clamped to ``[1, L]``
+    so every word still has a last marker. Extra markers are sampled uniformly
+    without replacement from positions before the last marker; positions after
+    it stay fillers, as before.
+
     Sequence: <bos> x_1 … x_L <sep> answer <eos> with loss only on answer.
     """
 
@@ -705,10 +712,12 @@ class SelectiveCopyDataset(CustomDataset):
         marker_vocab_size: int = 16,
         misc_vocab_size: int = 16,
         add_positional_offset: bool = True,
+        marker_frequency: float = 0.2,
     ):
         super().__init__(max_test_length + 4, add_positional_offset) # <bos>, <sep>, <eos> and <ans>
 
         assert marker_vocab_size >= 1 and misc_vocab_size >= 1
+        assert 0.0 <= marker_frequency <= 1.0
 
         markers = [f"#{k + 1}" for k in range(marker_vocab_size)]
         fillers = [f"m{k}" for k in range(misc_vocab_size)]
@@ -716,6 +725,7 @@ class SelectiveCopyDataset(CustomDataset):
 
         self._marker_vocab_size = marker_vocab_size
         self._misc_vocab_size = misc_vocab_size
+        self.marker_frequency = marker_frequency
 
         self.range_min, self.range_max = length_range
         self.range_min = max(1, self.range_min)
@@ -739,17 +749,20 @@ class SelectiveCopyDataset(CustomDataset):
     def __iter__(self):
         n_markers = self._marker_vocab_size
         n_fillers = self._misc_vocab_size
-        vocab_size = n_markers + n_fillers
 
         while True:
             last_marker = random.randrange(min(n_markers, self.range_max))
-            length = random.randint(max(self.range_min, last_marker + 1), self.range_max)
-            last_pos = random.randrange(length)
+            length = random.randint(max(self.range_min, last_marker + 1), self.range_max) # length must be larger than last marker
 
-            content = [random.randrange(vocab_size) for _ in range(length)]
+            number_markers = min(length, max(1, math.ceil(length * self.marker_frequency))) # frequency controlled
+            n_before = number_markers - 1
+            last_pos = random.randrange(n_before, length)
+            marker_positions = random.sample(range(last_pos), n_before)
+
+            content = [n_markers + random.randrange(n_fillers) for _ in range(length)]
+            for i in marker_positions:
+                content[i] = random.randrange(n_markers)
             content[last_pos] = last_marker
-            for i in range(last_pos + 1, length):
-                content[i] = n_markers + random.randrange(n_fillers)
 
             ans = self._compute_answer_token_id(content)
 

@@ -23,6 +23,7 @@ _RUNCONFIG_CLASS_ATTRS = (
     "key_len",
     "mkar_vocab_size",
     "marker_vocab_size",
+    "marker_frequency",
     "early_stop",
     "sort_vocab_size",
 )

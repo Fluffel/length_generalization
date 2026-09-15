@@ -1166,6 +1166,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mkar-vocab-size", type=int, default=128)
     parser.add_argument("--marker-vocab-size", type=int, default=16)
     parser.add_argument(
+        "--marker-frequency",
+        type=float,
+        default=0.2,
+        help=(
+            "Selective copy only: fraction of content tokens that are numbered "
+            "markers. The count is ceil(length * frequency), including the last "
+            "marker, and is clamped to [1, length]. Must be in [0, 1]."
+        ),
+    )
+    parser.add_argument(
         "--sort-vocab-size",
         type=int,
         default=None,
@@ -1242,6 +1252,9 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.key_len = args.key_len
     rc.mkar_vocab_size = args.mkar_vocab_size
     rc.marker_vocab_size = args.marker_vocab_size
+    if not (0.0 <= args.marker_frequency <= 1.0):
+        raise SystemExit(f"--marker-frequency must be in [0, 1], got {args.marker_frequency}.")
+    rc.marker_frequency = args.marker_frequency
     if args.sort_vocab_size is not None and args.sort_vocab_size < 1:
         raise SystemExit(f"--sort-vocab-size must be >= 1, got {args.sort_vocab_size}.")
     rc.sort_vocab_size = args.sort_vocab_size
