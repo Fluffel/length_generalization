@@ -180,7 +180,12 @@ class RunConfig:
     model_spec: Optional[str] = None
 
     task: str = "parity"
+    # Number of training iterations. Each iteration draws a random training seed
+    # unless ``seed`` is set, in which case there is always exactly one iteration.
     seeds: int = 1
+    # If set, run a single iteration with this training seed (model init and the
+    # on-the-fly training stream). Independent of ``dataset_seed``.
+    seed: Optional[int] = None
     # Seed used once to materialize eval bins (and formal-language train corpora).
     # Independent of the training-loop seed, which only affects model init and the
     # on-the-fly training stream. None draws a random seed at the start of `main`

@@ -771,6 +771,13 @@ class customCollator:
 
 
 
+def _training_seeds(run_config: RunConfig) -> list[int]:
+    """Seeds for the training loop: one specified seed, or ``seeds`` random draws."""
+    if run_config.seed is not None:
+        return [run_config.seed]
+    return [secrets.randbelow(2**32) for _ in range(run_config.seeds)]
+
+
 def _validate_freeze_config(run_config: RunConfig) -> None:
     if run_config.freeze_arch is None:
         return
@@ -849,7 +856,8 @@ def main(run_config: RunConfig) -> None:
     write_run_record(json_path, run_record)
     LOGGER.info("Run record path: %s", json_path)
 
-    for seed in range(run_config.seeds):
+    for seed in _training_seeds(run_config):
+        LOGGER.info("Training seed: %s", seed)
         if use_wandb:
             _init_wandb_run_for_seed(run_config, seed)
         set_seed(seed)
@@ -1066,16 +1074,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--task", type=str, choices=list(ALL_TASKS))
-    parser.add_argument("--seeds", type=int, default=1)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Training seed (model init and the on-the-fly training stream). "
+            "If set, run a single iteration with this seed. If omitted, each of "
+            "the --seeds iterations draws a random seed (recorded in the run log)."
+        ),
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        default=1,
+        help=(
+            "Number of training iterations, each with a randomly drawn seed. "
+            "Cannot be combined with --seed, which always runs once."
+        ),
+    )
     parser.add_argument(
         "--dataset-seed",
         type=int,
         default=None,
         help=(
             "Seed used once to materialize eval bins (and formal-language train "
-            "corpora). Independent of --seeds, which only varies model init and "
-            "the training stream. If omitted, a random seed is drawn and recorded "
-            "in the run log."
+            "corpora). Independent of --seed/--seeds, which only vary model init "
+            "and the training stream. If omitted, a random seed is drawn and "
+            "recorded in the run log."
         ),
     )
     parser.add_argument("--job-id", type=str, default="")
@@ -1208,7 +1234,16 @@ def build_parser() -> argparse.ArgumentParser:
 def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     """Apply the non-model settings; the model fields already come from the spec."""
     rc.task = args.task
-    rc.seeds = args.seeds
+    if args.seeds < 1:
+        raise SystemExit(f"--seeds must be >= 1, got {args.seeds}.")
+    if args.seed is not None and args.seeds != 1:
+        raise SystemExit("--seed always runs a single iteration; do not also pass --seeds.")
+    if args.seed is not None:
+        rc.seed = args.seed
+        rc.seeds = 1
+    else:
+        rc.seed = None
+        rc.seeds = args.seeds
     rc.dataset_seed = args.dataset_seed
     rc.job_id = args.job_id
 

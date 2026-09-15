@@ -630,7 +630,7 @@ def _materialize_olmo_model(
 
     # OLMo ``init_weights`` uses a private ``torch.Generator`` seeded from
     # ``cfg.init_seed`` (default 0), not the global PyTorch RNG. Set it from the
-    # training-loop seed so ``--seeds N`` actually varies initialization.
+    # training-loop seed so random (or ``--seed``) runs actually vary initialization.
     cfg.init_seed = init_seed
 
     # OLMo-core constructors intentionally leave parameters such as the GDN
