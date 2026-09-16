@@ -1211,9 +1211,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.2,
         help=(
-            "Selective copy only: fraction of content tokens that are numbered "
-            "markers. The count is ceil(length * frequency), including the last "
-            "marker, and is clamped to [1, length]. Must be in [0, 1]."
+            "Selective copy only: lower bound on the fraction of content tokens "
+            "that are numbered markers. Per example the frequency is drawn "
+            "uniformly from [this value, 1]. The count is ceil(length * frequency), "
+            "including the last marker, and is clamped to [1, length]. Must be in [0, 1]."
         ),
     )
     parser.add_argument(

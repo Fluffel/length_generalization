@@ -780,11 +780,12 @@ class SelectiveCopyDataset(CustomDataset):
     ``marker_vocab_size`` must be at most the training length-range max (enforced
     by the dataset factory) so every marker is placeable on some training word.
 
-    ``marker_frequency`` is the fraction of content tokens that are numbered
-    markers. The count is ``ceil(L * marker_frequency)``, clamped to ``[1, L]``
-    so every word still has a last marker. Extra markers are sampled uniformly
-    without replacement from positions before the last marker; positions after
-    it stay fillers, as before.
+    ``marker_frequency`` is a lower bound on the fraction of content tokens that
+    are numbered markers. Per example the frequency is drawn uniformly from
+    ``[marker_frequency, 1]``. The count is ``ceil(L * frequency)``, clamped to
+    ``[1, L]`` so every word still has a last marker. Extra markers are sampled
+    uniformly without replacement from positions before the last marker;
+    positions after it stay fillers, as before.
 
     Sequence: <bos> x_1 … x_L <sep> answer <eos> with loss only on answer.
     """
@@ -838,7 +839,8 @@ class SelectiveCopyDataset(CustomDataset):
             last_marker = random.randrange(min(n_markers, self.range_max))
             length = random.randint(max(self.range_min, last_marker + 1), self.range_max) # length must be larger than last marker
 
-            number_markers = min(length, max(1, math.ceil(length * self.marker_frequency))) # frequency controlled
+            frequency = random.uniform(self.marker_frequency, 1.0)
+            number_markers = min(length, max(1, math.ceil(length * frequency)))
             n_before = number_markers - 1
             last_pos = random.randrange(n_before, length)
             marker_positions = random.sample(range(last_pos), n_before)
