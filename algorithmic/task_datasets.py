@@ -399,6 +399,50 @@ class ParityDataset(CustomDataset):
 
             yield instance, pos_ids, label
 
+
+class ParityMajorityDataset(CustomDataset):
+    """Intersection of binary majority and even parity of 1s.
+
+    Output 1 iff there are strictly more 1s than 0s *and* the number of 1s is
+    even; otherwise 0. Ties are rejected at sampling, matching BinaryMajorityDataset.
+    """
+
+    def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
+        super().__init__(max_test_length + 4, add_positional_offset)  # bos, sep, ans, eos
+
+        self.tokenizer = customTokenizer(["0", "1"])
+        assert len(self.tokenizer) == 6
+        self.range_min, self.range_max = length_range
+        self.range_min = max(1, self.range_min)
+        self.max_test_length = max_test_length
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)  # the pos emb is initialized based on max_test_length
+
+    def __iter__(self):
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            while True:
+                num_zero = random.randint(0, length)
+                if num_zero != length - num_zero:
+                    break
+            num_ones = length - num_zero
+            instance = [0] * num_zero + [1] * num_ones
+            random.shuffle(instance)
+            ans = 1 if num_ones > num_zero and num_ones % 2 == 0 else 0
+
+            instance.insert(0, self.tokenizer.bos_token_id)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(ans)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            # setting some tokens to [pad] will make the loss on these tokens (as pred targets) be ignored
+            label[:length + 2] = [self.tokenizer.pad_token_id] * (length + 2)  # bos + bits.. + sep
+
+            pos_ids = self.get_pos_ids(len(instance), self.max_test_length - length)
+
+            yield instance, pos_ids, label
+
+
 class AdditionDataset(CustomDataset):
     def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
         super().__init__(max_test_length*2, add_positional_offset)  # bos, ans, eos

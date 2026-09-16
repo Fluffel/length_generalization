@@ -25,6 +25,7 @@ try:
         MQARWordProblemDataset,
         NonStarFreeCorpus,
         ParityDataset,
+        ParityMajorityDataset,
         RepeatCopyDataset,
         SelectiveCopyDataset,
         SortDataset,
@@ -51,6 +52,7 @@ except ImportError:
         MQARWordProblemDataset,
         NonStarFreeCorpus,
         ParityDataset,
+        ParityMajorityDataset,
         RepeatCopyDataset,
         SelectiveCopyDataset,
         SortDataset,
@@ -87,6 +89,7 @@ ALGORITHMIC_TASKS: tuple[str, ...] = (
     "repeat_copy",
     "sort",
     "parity",
+    "parity_majority",
     "addition",
     "mqar",
     "s5",
@@ -145,6 +148,8 @@ def _make_task_dataset(
             )
         case "parity":
             return ParityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
+        case "parity_majority":
+            return ParityMajorityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "addition":
             return AdditionDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "mqar":
