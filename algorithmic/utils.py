@@ -193,10 +193,11 @@ class RunConfig:
     dataset_seed: Optional[int] = None
     job_id: str = ""
 
-    # MQAR configs. Key vocab size is derived from the longest eval length
-    # (see task_datasets.mqar_key_vocab_size), not a separate hyperparameter.
+    # MQAR / selective_state_tracking configs. Key vocab size (MQAR) is derived
+    # from the longest eval length (see task_datasets.mqar_key_vocab_size), not a
+    # separate hyperparameter. SST filler vocab is 2 * max_test_length.
     monoid: str = "parity"
-    monoid_n: int = 2
+    monoid_n: int = 2 # Only used for cyclic
     query_fraction_upper: float = 0.2
     query_fraction_lower: float = 0.2
 

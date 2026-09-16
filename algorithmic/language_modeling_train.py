@@ -1197,7 +1197,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="parity",
         choices=["parity", "cyclic", "s5"],
-        help="MQAR monoid: parity (Z_2 XOR), cyclic (Z_n addition), or s5 (S_5 composition).",
+        help="Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), cyclic (Z_n addition, MQAR only), or s5 (S_5 composition).",
     )
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--query-fraction-upper", type=float, default=0.2)

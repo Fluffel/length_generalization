@@ -29,6 +29,7 @@ try:
         SelectiveCopyDataset,
         SortDataset,
         S5Dataset,
+        SelectiveStateTrackingDataset,
         StarFreeCorpus,
         StarFreePostLanguageCorpus,
         TomitaCorpus,
@@ -54,6 +55,7 @@ except ImportError:
         SelectiveCopyDataset,
         SortDataset,
         S5Dataset,
+        SelectiveStateTrackingDataset,
         StarFreeCorpus,
         StarFreePostLanguageCorpus,
         TomitaCorpus,
@@ -88,6 +90,7 @@ ALGORITHMIC_TASKS: tuple[str, ...] = (
     "addition",
     "mqar",
     "s5",
+    "selective_state_tracking",
     "flipflop",
     "selective_copy",
     "mkar",
@@ -156,6 +159,14 @@ def _make_task_dataset(
             )
         case "s5":
             return S5Dataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
+        case "selective_state_tracking":
+            return SelectiveStateTrackingDataset(
+                length_range,
+                max_test_length,
+                add_positional_offset=add_positional_offset,
+                monoid_type=run_config.monoid,
+                monoid_n=run_config.monoid_n,
+            )
         case "flipflop":
             return FlipFlopDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "selective_copy":

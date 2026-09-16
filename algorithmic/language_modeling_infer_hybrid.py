@@ -242,8 +242,8 @@ def infer_max_test_length_from_state(task: str, state: dict, fallback: int) -> i
         return n_positions - 4
     if task in {"unique_copy", "repeat_copy", "sort"}:
         return (n_positions - 3) // 2
-    if task == "mqar":
-        # bos + content + sep + sep + answer + eos
+    if task in {"mqar", "selective_state_tracking"}:
+        # bos + content (pairs + query) + sep + sep + answer + eos
         return n_positions - 5
     return fallback
 
@@ -645,7 +645,7 @@ def main():
         type=str,
         default="parity",
         choices=["parity", "cyclic", "s5"],
-        help="MQAR monoid: parity (Z_2 XOR), cyclic (Z_n addition), or s5 (S_5 composition).",
+        help="Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), cyclic (Z_n addition, MQAR only), or s5 (S_5 composition).",
     )
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--query_fraction", type=float, default=0.2)

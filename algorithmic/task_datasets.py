@@ -456,6 +456,7 @@ class AdditionDataset(CustomDataset):
 # operates on monoid element indices 0..monoid_size-1.
 
 MQAR_MONOID_TYPES = ("parity", "cyclic", "s5")
+SST_MONOID_TYPES = ("parity", "s5")
 
 def parity_monoid():
     """Z_2 under XOR. Elements: {0, 1}."""
@@ -492,6 +493,29 @@ def monoid_from_cayley_table(table: list[list[int]], identity: int):
     return (lambda a, b: table[a][b]), identity, monoid_size
 
 
+def resolve_monoid(
+    monoid_type: str,
+    monoid_n: int = 2,
+    allowed: tuple[str, ...] = MQAR_MONOID_TYPES,
+):
+    """Return ``(op, identity, monoid_size, tokens)`` for a named monoid preset."""
+    if monoid_type not in allowed:
+        raise ValueError(f"Unknown monoid_type {monoid_type!r}; expected one of {allowed}")
+    match monoid_type:
+        case "parity":
+            op, identity, monoid_size = parity_monoid()
+            tokens = [f"m{i}" for i in range(monoid_size)]
+        case "cyclic":
+            op, identity, monoid_size = cyclic_monoid(monoid_n)
+            tokens = [f"m{i}" for i in range(monoid_size)]
+        case "s5":
+            op, identity, monoid_size = s5_monoid()
+            tokens = list(_S5_TOKENS)
+        case _:
+            raise ValueError(f"Unknown monoid_type {monoid_type!r}; expected one of {allowed}")
+    return op, identity, monoid_size, tokens
+
+
 def mqar_key_vocab_size(max_test_length: int) -> int:
     """Largest number of unique keys an MQAR instance of content length ``max_test_length`` can contain.
 
@@ -499,6 +523,28 @@ def mqar_key_vocab_size(max_test_length: int) -> int:
     T <= (L_max - 1) // 2 — around half the longest evaluation length.
     """
     return max(1, (max_test_length - 1) // 2)
+
+
+def sst_filler_vocab_size(max_test_length: int, multiplier: int = 2) -> int:
+    """Filler-alphabet size for selective state tracking.
+
+    The true language has an infinite integer alphabet. We approximate that with
+    a finite vocab strictly larger than the longest evaluation length (default:
+    twice ``max_test_length``), so random distractor fillers almost never collide
+    with the query by chance — and never do, because distractors are sampled
+    from the complement of the query token.
+    """
+    return max(2, multiplier * max(1, max_test_length))
+
+
+def sst_num_pairs(length: int) -> int:
+    """Number of ``(x, A)`` pairs that fit in a word of ``length`` tokens.
+
+    The word is ``x1 A1 ... xT AT <sep> x_query`` (query included, like MQAR's
+    ``2T + Q``), so ``T = (length - 2) // 2``. That keeps ``2T + 2`` — the pairs
+    plus ``<sep> x_query`` — inside ``length``.
+    """
+    return max(0, (length - 2) // 2)
 
 
 class MQARWordProblemDataset(CustomDataset):
@@ -521,20 +567,9 @@ class MQARWordProblemDataset(CustomDataset):
         # can make a tiny instance 8 tokens even when max_test_length < 3.
         super().__init__(max(max_test_length, 3) + 5, add_positional_offset)
 
-        match monoid_type:
-            case "parity":
-                self.op, self.identity, self.monoid_size = parity_monoid()
-                monoid_tokens = [f"m{i}" for i in range(self.monoid_size)]
-            case "cyclic":
-                self.op, self.identity, self.monoid_size = cyclic_monoid(monoid_n)
-                monoid_tokens = [f"m{i}" for i in range(self.monoid_size)]
-            case "s5":
-                self.op, self.identity, self.monoid_size = s5_monoid()
-                monoid_tokens = list(_S5_TOKENS)
-            case _:
-                raise ValueError(
-                    f"Unknown monoid_type {monoid_type!r}; expected one of {MQAR_MONOID_TYPES}"
-                )
+        self.op, self.identity, self.monoid_size, monoid_tokens = resolve_monoid(
+            monoid_type, monoid_n
+        )
 
         self.range_min, self.range_max = length_range
         self.range_min = max(1, self.range_min)
@@ -671,6 +706,116 @@ class S5Dataset(CustomDataset):
             label[:length + 2] = [self.tokenizer.pad_token_id] * (length + 2)  # bos + perms + sep
 
             pos_ids = self.get_pos_ids(len(instance), self.max_test_length - length)
+
+            yield instance, pos_ids, label
+
+
+class SelectiveStateTrackingDataset(CustomDataset):
+    """
+    Selective state tracking: interleaved filler/monoid pairs, then a query
+    filler whose matching values are folded under a monoid.
+
+    Two alphabets: an (approximately infinite) filler vocab ``x0, x1, ...`` and
+    a finite monoid (parity = Z_2 XOR, or S_5 composition), using the same
+    tokens and left-to-right fold as MQAR.
+
+    Sequence: ``<bos> x1 A1 x2 A2 ... xT AT <sep> x_query <sep> answer <eos>``.
+    ``answer`` is the left-fold of those ``Ai`` whose predecessor ``xi`` equals
+    ``x_query``; non-matching pairs are ignored. Loss is scored on the answer
+    (and ``<eos>``).
+
+    ``length_range`` is the word length, matching MQAR: the ``T`` pairs plus the
+    query (the first ``<sep>`` is packed into that budget so that
+    ``x1 A1 ... xT AT <sep> x_query`` stays ≤ the sampled length, hence ≤ 150
+    on the default eval bins). Per example we sample that length, set
+    ``T = (length - 2) // 2``, then ``k ~ Uniform{1, ..., T}``, plant ``k``
+    matching pairs, fill the rest with fillers ≠ query, and shuffle pair order.
+
+    ``n_positions`` is ``max_test_length + 5``, as in MQAR: the query is part of
+    the word, and the five extras are ``<bos>``, the two ``<sep>``s, answer,
+    ``<eos>``.
+
+    The filler vocab is ``2 * max_test_length`` (see ``sst_filler_vocab_size``),
+    shared by train and eval so OOD bins cannot introduce unseen tokens.
+    """
+
+    def __init__(
+        self,
+        length_range: tuple[int, int],
+        max_test_length: int,
+        add_positional_offset: bool = True,
+        filler_vocab_multiplier: int = 2,
+        monoid_type: str = "parity",
+        monoid_n: int = 2,
+    ):
+        # Query is part of the word (MQAR). Extras: <bos> <sep> <sep> answer <eos>.
+        super().__init__(max(max_test_length, 4) + 5, add_positional_offset)
+
+        self.op, self.identity, self.monoid_size, monoid_tokens = resolve_monoid(
+            monoid_type, monoid_n, allowed=SST_MONOID_TYPES
+        )
+        self.monoid_type = monoid_type
+
+        pair_budget = max_test_length if max_test_length > 0 else length_range[1]
+        self.filler_size = sst_filler_vocab_size(
+            pair_budget, multiplier=filler_vocab_multiplier
+        )
+        vocab = [f"x{i}" for i in range(self.filler_size)] + monoid_tokens
+        self.tokenizer = customTokenizer(vocab)
+        self.monoid_token_offset = self.filler_size
+
+        self.range_min, self.range_max = length_range
+        # Shortest word: x A <sep> x_query  (T=1)
+        self.range_min = max(4, self.range_min)
+        self.max_test_length = max_test_length
+        assert self.filler_size >= 2
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)
+        assert sst_num_pairs(self.range_min) >= 1
+        if max_test_length > 0:
+            assert sst_num_pairs(max_test_length) >= 1
+
+    def product(self, elem_indices: list[int]) -> int:
+        """Left-fold ``elem_indices`` under the monoid op; empty product is identity."""
+        acc = self.identity
+        for idx in elem_indices:
+            acc = self.op(acc, idx)
+        return acc
+
+    def __iter__(self):
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+            T = sst_num_pairs(length)
+            k = random.randint(1, T)
+            query = random.randrange(self.filler_size)
+
+            pairs: list[tuple[int, int]] = [
+                (query, random.randrange(self.monoid_size)) for _ in range(k)
+            ]
+            for _ in range(T - k):
+                x = random.randrange(self.filler_size - 1)
+                if x >= query:
+                    x += 1
+                pairs.append((x, random.randrange(self.monoid_size)))
+            random.shuffle(pairs)
+
+            answer_idx = self.product([a for x, a in pairs if x == query])
+
+            instance = [self.tokenizer.bos_token_id]
+            for x, a in pairs:
+                instance.append(x)
+                instance.append(self.monoid_token_offset + a)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(query)
+            instance.append(self.tokenizer.sep_token_id)
+            instance.append(self.monoid_token_offset + answer_idx)
+            instance.append(self.tokenizer.eos_token_id)
+
+            label = deepcopy(instance)
+            # bos + 2T pairs + sep + query + sep
+            mask_len = 2 * T + 4
+            label[:mask_len] = [self.tokenizer.pad_token_id] * mask_len
+
+            pos_ids = self.get_pos_ids(len(instance), max(0, self.n_positions - len(instance)))
 
             yield instance, pos_ids, label
 
