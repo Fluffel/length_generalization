@@ -10,7 +10,7 @@ Train on short sequences (default lengths 0–50), evaluate on longer ones (51�
 
 Dependencies live in the Docker image; `example.sub` is the job blueprint. For a minimal run, edit:
 
-- `execute.sh` — set the local path to this project directory (line 2).
+- `execute.sh.example` — set the local path to this project directory (line 2).
 - `example.sub` — set `WANDB_*` environment variables if needed, and the log paths.
 
 ```bash
