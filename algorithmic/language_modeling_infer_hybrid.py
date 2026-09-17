@@ -238,8 +238,11 @@ def infer_max_test_length_from_state(task: str, state: dict, fallback: int) -> i
     if wpe is None:
         return fallback
     n_positions = int(wpe.shape[0])
-    if task in {"bin_majority", "majority", "bin_majority_interleave", "parity", "parity_majority", "addition"}:
+    if task in {"bin_majority", "majority", "bin_majority_interleave", "parity", "parity_majority"}:
         return n_positions - 4
+    if task in {"addition", "multiplication"}:
+        # Both use n_positions = max_test_length * 2 (input + answer).
+        return n_positions // 2
     if task in {"unique_copy", "repeat_copy", "sort"}:
         return (n_positions - 3) // 2
     if task in {"mqar", "selective_state_tracking"}:

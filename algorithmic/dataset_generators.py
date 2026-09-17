@@ -22,6 +22,7 @@ try:
         FormalLanguageDataset,
         MajorityDataset,
         MKARDataset,
+        MultiplicationDataset,
         MQARWordProblemDataset,
         NonStarFreeCorpus,
         ParityDataset,
@@ -50,6 +51,7 @@ except ImportError:
         FormalLanguageDataset,
         MajorityDataset,
         MKARDataset,
+        MultiplicationDataset,
         MQARWordProblemDataset,
         NonStarFreeCorpus,
         ParityDataset,
@@ -93,6 +95,7 @@ ALGORITHMIC_TASKS: tuple[str, ...] = (
     "parity",
     "parity_majority",
     "addition",
+    "multiplication",
     "mqar",
     "s5",
     "s5_limited",
@@ -155,6 +158,8 @@ def _make_task_dataset(
             return ParityMajorityDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "addition":
             return AdditionDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
+        case "multiplication":
+            return MultiplicationDataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
         case "mqar":
             return MQARWordProblemDataset(
                 length_range,

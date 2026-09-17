@@ -495,6 +495,63 @@ class AdditionDataset(CustomDataset):
 
             yield instance, pos_ids, label
 
+
+class MultiplicationDataset(CustomDataset):
+    """Binary multiplication: ``<bos> op1 * op2 = product <eos>``.
+
+    Same length convention as ``AdditionDataset``: ``length`` is the number of
+    tokens before the product (``op1`` + ``*`` + ``op2`` + ``=``). The product of
+    two n- and m-bit numbers is at most n+m bits, so the full sequence still fits
+    in ``max_test_length * 2`` positions.
+    """
+
+    def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
+        super().__init__(max_test_length*2, add_positional_offset)  # bos, ans, eos
+
+        self.tokenizer = customTokenizer(["0", "1", "*", "="])
+        self.range_min, self.range_max = length_range
+        self.range_min = max(4, self.range_min)
+        self.max_test_length = max_test_length
+        assert (max_test_length >= self.range_max) or (max_test_length == -1)    # the pos emb is initialized based on max_test_length
+
+    def __iter__(self):
+        while True:
+            length = random.randint(self.range_min, self.range_max)
+
+            len_operand1 = random.randint(1, length-3)
+            len_operand2 = length - 2 - len_operand1
+            
+
+            if len_operand1 > 1:
+                operand1 = ["1"] + random.choices(["0", "1"], k=len_operand1-1)
+            else:
+                operand1 = random.choices(["0", "1"], k=1)
+            if len_operand2 > 1:
+                operand2 = ["1"] + random.choices(["0", "1"], k=len_operand2-1)
+            else:
+                operand2 = random.choices(["0", "1"], k=1)
+
+            ans = int("0b" + "".join(operand1), 2) * int("0b" + "".join(operand2), 2)
+            ans = list(bin(ans)[2:])
+
+            instance = [self.tokenizer.bos_token]
+            instance.extend(operand1)
+            instance.append("*")
+            instance.extend(operand2)
+            instance.append("=")
+            instance.extend(ans)
+            instance.append(self.tokenizer.eos_token)
+
+            instance = list(map(lambda x: self.tokenizer.vocab[x], instance))
+
+            label = deepcopy(instance)
+            # setting some tokens to [pad] will make the loss on these tokens (as pred targets) be ignored
+            label[:length+1] = [self.tokenizer.pad_token_id,] * (length+1)   # bos + bits.. + *
+
+            pos_ids = self.get_pos_ids(len(instance), self.max_test_length * 2 - len(instance))
+
+            yield instance, pos_ids, label
+
 # ── Monoid presets ──────────────────────────────────────────────────────────
 # Each returns (op, identity, monoid_size) where op: (int, int) -> int
 # operates on monoid element indices 0..monoid_size-1.
