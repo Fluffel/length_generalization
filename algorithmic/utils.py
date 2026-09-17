@@ -196,6 +196,7 @@ class RunConfig:
     # MQAR / selective_state_tracking configs. Key vocab size (MQAR) is derived
     # from the longest eval length (see task_datasets.mqar_key_vocab_size), not a
     # separate hyperparameter. SST filler vocab is 2 * max_test_length.
+    # ``s5_limited`` samples identity + transpositions; answers still live in S_5.
     monoid: str = "parity"
     monoid_n: int = 2 # Only used for cyclic
     query_fraction_upper: float = 0.2

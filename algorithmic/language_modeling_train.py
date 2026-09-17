@@ -14,7 +14,7 @@ import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments
 from transformers.trainer_utils import set_seed
 
-from dataset_generators import ALL_TASKS, build_curriculum_datasets, build_datasets, is_formal_task
+from dataset_generators import ALL_TASKS, MQAR_MONOID_TYPES, build_curriculum_datasets, build_datasets, is_formal_task
 from model_spec import available_model_specs, load_model_spec
 from models import build_model, hybrid_group_parameters
 from run_record import (
@@ -1196,8 +1196,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--monoid",
         type=str,
         default="parity",
-        choices=["parity", "cyclic", "s5"],
-        help="Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), cyclic (Z_n addition, MQAR only), or s5 (S_5 composition).",
+        choices=list(MQAR_MONOID_TYPES),
+        help=(
+            "Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), "
+            "cyclic (Z_n addition, MQAR only), s5 (S_5 composition), or s5_limited "
+            "(S_5 inputs restricted to identity + transpositions; answers still in full S_5)."
+        ),
     )
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--query-fraction-upper", type=float, default=0.2)

@@ -19,7 +19,7 @@ import re
 import torch
 import torch.nn as nn
 
-from dataset_generators import ALL_TASKS, build_datasets
+from dataset_generators import ALL_TASKS, MQAR_MONOID_TYPES, build_datasets
 from transformers.trainer_utils import set_seed
 from utils import ArchSlot, RunConfig
 
@@ -644,8 +644,12 @@ def main():
         "--monoid",
         type=str,
         default="parity",
-        choices=["parity", "cyclic", "s5"],
-        help="Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), cyclic (Z_n addition, MQAR only), or s5 (S_5 composition).",
+        choices=list(MQAR_MONOID_TYPES),
+        help=(
+            "Monoid for MQAR and selective_state_tracking: parity (Z_2 XOR), "
+            "cyclic (Z_n addition, MQAR only), s5 (S_5 composition), or s5_limited "
+            "(S_5 inputs restricted to identity + transpositions; answers still in full S_5)."
+        ),
     )
     parser.add_argument("--monoid_n", type=int, default=2)
     parser.add_argument("--query_fraction", type=float, default=0.2)

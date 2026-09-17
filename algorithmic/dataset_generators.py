@@ -36,6 +36,7 @@ try:
         TomitaCorpus,
         UniqueCopyDataset,
         customTokenizer,
+        MQAR_MONOID_TYPES,
     )
 except ImportError:
     from algorithmic.task_datasets import (
@@ -63,6 +64,7 @@ except ImportError:
         TomitaCorpus,
         UniqueCopyDataset,
         customTokenizer,
+        MQAR_MONOID_TYPES,
     )
 
 
@@ -93,6 +95,7 @@ ALGORITHMIC_TASKS: tuple[str, ...] = (
     "addition",
     "mqar",
     "s5",
+    "s5_limited",
     "selective_state_tracking",
     "flipflop",
     "selective_copy",
@@ -164,6 +167,10 @@ def _make_task_dataset(
             )
         case "s5":
             return S5Dataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
+        case "s5_limited":
+            return S5Dataset(
+                length_range, max_test_length, add_positional_offset=add_positional_offset, limited=True
+            )
         case "selective_state_tracking":
             return SelectiveStateTrackingDataset(
                 length_range,

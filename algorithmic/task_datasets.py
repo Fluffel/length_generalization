@@ -499,8 +499,8 @@ class AdditionDataset(CustomDataset):
 # Each returns (op, identity, monoid_size) where op: (int, int) -> int
 # operates on monoid element indices 0..monoid_size-1.
 
-MQAR_MONOID_TYPES = ("parity", "cyclic", "s5")
-SST_MONOID_TYPES = ("parity", "s5")
+MQAR_MONOID_TYPES = ("parity", "cyclic", "s5", "s5_limited")
+SST_MONOID_TYPES = ("parity", "s5", "s5_limited")
 
 def parity_monoid():
     """Z_2 under XOR. Elements: {0, 1}."""
@@ -516,6 +516,21 @@ _S5_INDEX = {p: i for i, p in enumerate(_S5_PERMS)}
 _S5_TOKENS = ["".join(map(str, p)) for p in _S5_PERMS]
 
 
+def _s5_is_transposition(perm: tuple[int, ...]) -> bool:
+    """Whether ``perm`` swaps exactly two points and fixes the other three."""
+    return sum(image != point for point, image in enumerate(perm)) == 2
+
+
+# Identity plus the C(5, 2) = 10 transpositions. This is a generating set of
+# S_5, not a submonoid: products of distinct transpositions are 3-cycles or
+# double transpositions, so answers still live in the full 120-element group.
+_S5_SWAP_IDS = tuple(i for i, p in enumerate(_S5_PERMS) if _s5_is_transposition(p))
+_S5_SWAPS_AND_IDENTITY_IDS = (0, *_S5_SWAP_IDS)
+assert len(_S5_PERMS) == 120
+assert len(_S5_SWAP_IDS) == 10
+assert len(_S5_SWAPS_AND_IDENTITY_IDS) == 11
+
+
 def s5_monoid():
     """S_5 under composition. Apply the left permutation, then the right.
 
@@ -527,6 +542,18 @@ def s5_monoid():
         pa, pb = _S5_PERMS[a], _S5_PERMS[b]
         return _S5_INDEX[tuple(pb[x] for x in pa)]
     return op, 0, len(_S5_PERMS)
+
+
+def monoid_sample_ids(monoid_type: str, monoid_size: int) -> tuple[int, ...]:
+    """IDs sampled as *input* elements. Answers still use ``0..monoid_size-1``.
+
+    ``s5_limited`` samples the identity and the 10 transpositions of S_5. That
+    set is not closed, so the tokenizer and answer space remain full S_5.
+    """
+    if monoid_type == "s5_limited":
+        return _S5_SWAPS_AND_IDENTITY_IDS
+    return tuple(range(monoid_size))
+
 
 def monoid_from_cayley_table(table: list[list[int]], identity: int):
     """
@@ -552,7 +579,7 @@ def resolve_monoid(
         case "cyclic":
             op, identity, monoid_size = cyclic_monoid(monoid_n)
             tokens = [f"m{i}" for i in range(monoid_size)]
-        case "s5":
+        case "s5" | "s5_limited":
             op, identity, monoid_size = s5_monoid()
             tokens = list(_S5_TOKENS)
         case _:
@@ -604,7 +631,8 @@ class MQARWordProblemDataset(CustomDataset):
             max_test_length: max content length (also sizes the key vocabulary).
             query_fraction_upper: upper bound for the fraction of content length devoted to queries.
             query_fraction_lower: lower bound for the fraction of content length devoted to queries.
-            monoid_type: ``parity`` (Z_2 XOR), ``cyclic`` (Z_n addition), or ``s5``.
+            monoid_type: ``parity`` (Z_2 XOR), ``cyclic`` (Z_n addition), ``s5``,
+                or ``s5_limited`` (S_5 inputs restricted to identity + transpositions).
             monoid_n: order n for the cyclic monoid.
         """
         # <bos> + content + <sep> + <sep> + answer + <eos>; the T=1,Q=1 floor
@@ -614,6 +642,7 @@ class MQARWordProblemDataset(CustomDataset):
         self.op, self.identity, self.monoid_size, monoid_tokens = resolve_monoid(
             monoid_type, monoid_n
         )
+        self.sample_ids = monoid_sample_ids(monoid_type, self.monoid_size)
 
         self.range_min, self.range_max = length_range
         self.range_min = max(1, self.range_min)
@@ -665,8 +694,8 @@ class MQARWordProblemDataset(CustomDataset):
 
             # Sample T unique keys (as token IDs 0..key_size-1)
             keys = random.sample(range(self.key_size), T)
-            # Sample T monoid elements (as monoid indices 0..monoid_size-1)
-            values = [random.randint(0, self.monoid_size - 1) for _ in range(T)]
+            # Sample T monoid elements (s5_limited: identity + transpositions)
+            values = [random.choice(self.sample_ids) for _ in range(T)]
             kv_map = dict(zip(keys, values))
 
             # Sample Q query keys without replacement from the T keys
@@ -712,15 +741,29 @@ class S5Dataset(CustomDataset):
     The product of ``p1, p2, ..., pL`` is the left fold
     ``pL ∘ ... ∘ p2 ∘ p1`` (apply the first permutation, then the next, ...).
     The empty product is the identity.
+
+    With ``limited=True``, input letters are the identity and the 10
+    transpositions of S_5. That generating set is not closed, so the answer
+    token is still any of the 120 group elements.
     """
 
-    def __init__(self, length_range: tuple[int, int], max_test_length: int, add_positional_offset: bool = True):
+    def __init__(
+        self,
+        length_range: tuple[int, int],
+        max_test_length: int,
+        add_positional_offset: bool = True,
+        limited: bool = False,
+    ):
         super().__init__(max_test_length + 4, add_positional_offset)  # bos, sep, ans, eos
 
         self.op, self.identity, self.monoid_size = s5_monoid()
         self.tokenizer = customTokenizer(list(_S5_TOKENS))
+        self.limited = limited
+        self.sample_ids = monoid_sample_ids("s5_limited" if limited else "s5", self.monoid_size)
         assert self.monoid_size == len(_S5_TOKENS)
         assert len(self.tokenizer) - 4 == self.monoid_size
+        if limited:
+            assert self.sample_ids == _S5_SWAPS_AND_IDENTITY_IDS
 
         self.range_min, self.range_max = length_range
         self.max_test_length = max_test_length
@@ -736,7 +779,7 @@ class S5Dataset(CustomDataset):
     def __iter__(self):
         while True:
             length = random.randint(self.range_min, self.range_max)
-            perms = [random.randint(0, self.monoid_size - 1) for _ in range(length)]
+            perms = [random.choice(self.sample_ids) for _ in range(length)]
             ans = self.product(perms)
 
             instance = [self.tokenizer.bos_token_id]
@@ -760,8 +803,8 @@ class SelectiveStateTrackingDataset(CustomDataset):
     filler whose matching values are folded under a monoid.
 
     Two alphabets: an (approximately infinite) filler vocab ``x0, x1, ...`` and
-    a finite monoid (parity = Z_2 XOR, or S_5 composition), using the same
-    tokens and left-to-right fold as MQAR.
+    a finite monoid (parity = Z_2 XOR, S_5 composition, or ``s5_limited``),
+    using the same tokens and left-to-right fold as MQAR.
 
     Sequence: ``<bos> x1 A1 x2 A2 ... xT AT <sep> x_query <sep> answer <eos>``.
     ``answer`` is the left-fold of those ``Ai`` whose predecessor ``xi`` equals
@@ -799,6 +842,7 @@ class SelectiveStateTrackingDataset(CustomDataset):
             monoid_type, monoid_n, allowed=SST_MONOID_TYPES
         )
         self.monoid_type = monoid_type
+        self.sample_ids = monoid_sample_ids(monoid_type, self.monoid_size)
 
         pair_budget = max_test_length if max_test_length > 0 else length_range[1]
         self.filler_size = sst_filler_vocab_size(
@@ -833,13 +877,13 @@ class SelectiveStateTrackingDataset(CustomDataset):
             query = random.randrange(self.filler_size)
 
             pairs: list[tuple[int, int]] = [
-                (query, random.randrange(self.monoid_size)) for _ in range(k)
+                (query, random.choice(self.sample_ids)) for _ in range(k)
             ]
             for _ in range(T - k):
                 x = random.randrange(self.filler_size - 1)
                 if x >= query:
                     x += 1
-                pairs.append((x, random.randrange(self.monoid_size)))
+                pairs.append((x, random.choice(self.sample_ids)))
             random.shuffle(pairs)
 
             answer_idx = self.product([a for x, a in pairs if x == query])
