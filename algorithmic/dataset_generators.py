@@ -193,6 +193,7 @@ def _make_task_dataset(
                 max_test_length,
                 add_positional_offset=add_positional_offset,
                 marker_vocab_size=marker_vocab_size,
+                misc_vocab_size=run_config.misc_vocab_size,
                 marker_frequency=run_config.marker_frequency,
             )
         case "mkar":

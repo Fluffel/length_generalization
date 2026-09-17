@@ -523,6 +523,7 @@ def build_eval_run_config(args: argparse.Namespace, arch: dict, nope: bool, use_
     rc.key_len = args.key_len
     rc.mkar_vocab_size = args.mkar_vocab_size
     rc.marker_vocab_size = args.marker_vocab_size
+    rc.misc_vocab_size = args.misc_vocab_size
     rc.marker_frequency = args.marker_frequency
     rc.sort_vocab_size = args.sort_vocab_size
     return rc
@@ -656,6 +657,16 @@ def main():
     parser.add_argument("--key-len", type=int, default=4)
     parser.add_argument("--mkar-vocab-size", type=int, default=128)
     parser.add_argument("--marker-vocab-size", type=int, default=16)
+    parser.add_argument(
+        "--misc-vocab-size",
+        type=int,
+        default=16,
+        help=(
+            "Selective copy only: number of filler tokens (m0..m_{N-1}) that make "
+            "up the non-marker half of the content vocabulary. Must match training. "
+            "Default: 16."
+        ),
+    )
     parser.add_argument(
         "--marker-frequency",
         type=float,

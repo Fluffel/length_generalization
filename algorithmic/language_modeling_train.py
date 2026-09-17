@@ -1211,6 +1211,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mkar-vocab-size", type=int, default=128)
     parser.add_argument("--marker-vocab-size", type=int, default=16)
     parser.add_argument(
+        "--misc-vocab-size",
+        type=int,
+        default=16,
+        help=(
+            "Selective copy only: number of filler tokens (m0..m_{N-1}) that make "
+            "up the non-marker half of the content vocabulary. Default: 16."
+        ),
+    )
+    parser.add_argument(
         "--marker-frequency",
         type=float,
         default=0.2,
@@ -1306,6 +1315,9 @@ def apply_args_to_config(rc: RunConfig, args: argparse.Namespace) -> None:
     rc.key_len = args.key_len
     rc.mkar_vocab_size = args.mkar_vocab_size
     rc.marker_vocab_size = args.marker_vocab_size
+    if args.misc_vocab_size < 1:
+        raise SystemExit(f"--misc-vocab-size must be >= 1, got {args.misc_vocab_size}.")
+    rc.misc_vocab_size = args.misc_vocab_size
     if not (0.0 <= args.marker_frequency <= 1.0):
         raise SystemExit(f"--marker-frequency must be in [0, 1], got {args.marker_frequency}.")
     rc.marker_frequency = args.marker_frequency

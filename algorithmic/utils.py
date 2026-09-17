@@ -211,6 +211,7 @@ class RunConfig:
 
     # SelectiveCopy configs
     marker_vocab_size = 16
+    misc_vocab_size = 16
     marker_frequency = 0.2  # lower bound; actual frequency is Uniform[this, 1]
 
     train_length_range: tuple[int, int] = (0, 50)
