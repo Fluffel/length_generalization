@@ -652,11 +652,52 @@ def main():
             "(S_5 inputs restricted to identity + transpositions; answers still in full S_5)."
         ),
     )
-    parser.add_argument("--monoid_n", type=int, default=2)
-    parser.add_argument("--query_fraction", type=float, default=0.2)
-    parser.add_argument("--key-len", type=int, default=4)
-    parser.add_argument("--mkar-vocab-size", type=int, default=128)
-    parser.add_argument("--marker-vocab-size", type=int, default=16)
+    parser.add_argument(
+        "--monoid_n",
+        type=int,
+        default=2,
+        help=(
+            "MQAR only, and only with --monoid cyclic: order n of the cyclic group "
+            "Z_n (addition mod n). Must match training. Default: 2."
+        ),
+    )
+    parser.add_argument(
+        "--query_fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "MQAR only: query-length fraction, used as both lower and upper bound "
+            "(inference does not sample a range). Must match training. Default: 0.2."
+        ),
+    )
+    parser.add_argument(
+        "--key-len",
+        type=int,
+        default=4,
+        help=(
+            "MKAR only: key length k. The query is the last k content tokens; the "
+            "answer is the token immediately after the last earlier occurrence of "
+            "that k-gram. Must match training. Default: 4."
+        ),
+    )
+    parser.add_argument(
+        "--mkar-vocab-size",
+        type=int,
+        default=128,
+        help=(
+            "MKAR only: number of distinct content tokens (0..N-1). Must match "
+            "training. Default: 128."
+        ),
+    )
+    parser.add_argument(
+        "--marker-vocab-size",
+        type=int,
+        default=16,
+        help=(
+            "Selective copy only: number of numbered marker tokens (#1..#N). Must "
+            "match training. Default: 16."
+        ),
+    )
     parser.add_argument(
         "--misc-vocab-size",
         type=int,

@@ -1073,7 +1073,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the available model specs and exit.",
     )
 
-    parser.add_argument("--task", type=str, choices=list(ALL_TASKS))
+    parser.add_argument(
+        "--task",
+        type=str,
+        choices=list(ALL_TASKS),
+        help=(
+            "Task to train. Algorithmic tasks (bin_majority, mqar, mkar, ...) stream "
+            "examples on the fly; formal-language tasks (tomita_*, d_*, aa_star, ...) "
+            "use pre-generated corpora. Task-specific flags below are ignored unless "
+            "the chosen task uses them."
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -1203,13 +1213,66 @@ def build_parser() -> argparse.ArgumentParser:
             "(S_5 inputs restricted to identity + transpositions; answers still in full S_5)."
         ),
     )
-    parser.add_argument("--monoid_n", type=int, default=2)
-    parser.add_argument("--query-fraction-upper", type=float, default=0.2)
-    parser.add_argument("--query-fraction-lower", type=float, default=0.2)
+    parser.add_argument(
+        "--monoid_n",
+        type=int,
+        default=2,
+        help=(
+            "MQAR only, and only with --monoid cyclic: order n of the cyclic group "
+            "Z_n (addition mod n). Ignored for parity / s5 / s5_limited. Default: 2."
+        ),
+    )
+    parser.add_argument(
+        "--query-fraction-upper",
+        type=float,
+        default=0.2,
+        help=(
+            "MQAR only: upper bound on the fraction of content length spent on query "
+            "keys. Per example the fraction is drawn uniformly from "
+            "[--query-fraction-lower, this value]; Q = max(1, round(fraction * length)), "
+            "then T = max(1, (length - Q) // 2) update pairs, with Q clamped to T. "
+            "Must satisfy 0 < lower <= upper < 1. Default: 0.2."
+        ),
+    )
+    parser.add_argument(
+        "--query-fraction-lower",
+        type=float,
+        default=0.2,
+        help=(
+            "MQAR only: lower bound on the query-length fraction (see "
+            "--query-fraction-upper). Default: 0.2, so the fraction is fixed at 0.2 "
+            "unless the upper bound is raised."
+        ),
+    )
 
-    parser.add_argument("--key-len", type=int, default=4)
-    parser.add_argument("--mkar-vocab-size", type=int, default=128)
-    parser.add_argument("--marker-vocab-size", type=int, default=16)
+    parser.add_argument(
+        "--key-len",
+        type=int,
+        default=4,
+        help=(
+            "MKAR only: key length k. The query is the last k content tokens; the "
+            "answer is the token immediately after the last earlier occurrence of "
+            "that k-gram. Sequences shorter than 2k+1 are skipped. Default: 4."
+        ),
+    )
+    parser.add_argument(
+        "--mkar-vocab-size",
+        type=int,
+        default=128,
+        help=(
+            "MKAR only: number of distinct content tokens (0..N-1). A larger vocab "
+            "makes accidental extra key collisions exponentially rarer. Default: 128."
+        ),
+    )
+    parser.add_argument(
+        "--marker-vocab-size",
+        type=int,
+        default=16,
+        help=(
+            "Selective copy only: number of numbered marker tokens (#1..#N). Clamped "
+            "to the training length-range max, since #k looks back k tokens. Default: 16."
+        ),
+    )
     parser.add_argument(
         "--misc-vocab-size",
         type=int,

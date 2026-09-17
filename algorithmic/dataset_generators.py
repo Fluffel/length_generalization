@@ -202,6 +202,7 @@ def _make_task_dataset(
                 max_test_length,
                 add_positional_offset=add_positional_offset,
                 key_len=run_config.key_len,
+                vocab_size=run_config.mkar_vocab_size,
             )
         case "dyck_2":
             return Dyck2Dataset(length_range, max_test_length, add_positional_offset=add_positional_offset)
