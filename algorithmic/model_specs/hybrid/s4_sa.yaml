@@ -8,7 +8,7 @@ ssm_kernel: s4
 # product of its lists; this one is the full grid (3 * 2 * 3 * 2 * 2 = 72 slots).
 architectures:
   - n_layer: [1, 2, 4]
-    n_head: [2, 4]
+    n_head: [1, 2, 4]
     d_model: [16, 64, 256]
     dropout: [0, 0.1]
     lr: [1.0e-3, 1.0e-4]
